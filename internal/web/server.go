@@ -1,0 +1,488 @@
+package web
+
+import (
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"net/url"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/gorilla/websocket"
+
+	"whisper/internal/chat"
+)
+
+const sessionCookie = "whisper_session"
+
+type Config struct {
+	Address   string
+	StaticDir string
+}
+
+type session struct {
+	userID    string
+	expiresAt time.Time
+}
+
+type Server struct {
+	config   Config
+	store    *chat.Store
+	hub      *hub
+	sessions map[string]session
+	sessionM sync.Mutex
+	logger   *slog.Logger
+	upgrader websocket.Upgrader
+}
+
+func NewServer(config Config, store *chat.Store, logger *slog.Logger) *Server {
+	server := &Server{
+		config: config, store: store, hub: newHub(), sessions: map[string]session{}, logger: logger,
+	}
+	server.upgrader = websocket.Upgrader{
+		ReadBufferSize:  4096,
+		WriteBufferSize: 4096,
+		CheckOrigin: func(r *http.Request) bool {
+			origin := r.Header.Get("Origin")
+			if origin == "" {
+				return true
+			}
+			parsed, err := url.Parse(origin)
+			return err == nil && parsed.Host == r.Host
+		},
+	}
+	return server
+}
+
+func (s *Server) Handler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", s.handleHealth)
+	mux.HandleFunc("/api/register", s.handleRegister)
+	mux.HandleFunc("/api/login", s.handleLogin)
+	mux.HandleFunc("/api/logout", s.handleLogout)
+	mux.HandleFunc("/api/bootstrap", s.requireAuth(s.handleBootstrap))
+	mux.HandleFunc("/api/profile", s.requireAuth(s.handleProfile))
+	mux.HandleFunc("/api/password", s.requireAuth(s.handlePassword))
+	mux.HandleFunc("/api/settings", s.requireAuth(s.handleSettings))
+	mux.HandleFunc("/api/conversations/clear", s.requireAuth(s.handleClearConversation))
+	mux.HandleFunc("/api/friends/delete", s.requireAuth(s.handleDeleteFriend))
+	mux.HandleFunc("/api/friends/color", s.requireAuth(s.handleFriendColor))
+	mux.HandleFunc("/ws", s.requireAuth(s.handleWebSocket))
+	mux.HandleFunc("/", s.handleStatic)
+	return s.securityHeaders(mux)
+}
+
+func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w, http.MethodPost)
+		return
+	}
+	var request struct {
+		Name     string `json:"name"`
+		Password string `json:"password"`
+	}
+	if !decodeJSON(w, r, &request) {
+		return
+	}
+	user, err := s.store.Register(request.Name, request.Password)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	s.setSession(w, user.ID)
+	writeJSON(w, http.StatusCreated, user)
+}
+
+func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w, http.MethodPost)
+		return
+	}
+	var request struct {
+		Name     string `json:"name"`
+		Password string `json:"password"`
+	}
+	if !decodeJSON(w, r, &request) {
+		return
+	}
+	user, err := s.store.Authenticate(request.Name, request.Password)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, chat.ErrUnauthorized)
+		return
+	}
+	s.setSession(w, user.ID)
+	writeJSON(w, http.StatusOK, user)
+}
+
+func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w, http.MethodPost)
+		return
+	}
+	if cookie, err := r.Cookie(sessionCookie); err == nil {
+		s.sessionM.Lock()
+		delete(s.sessions, cookie.Value)
+		s.sessionM.Unlock()
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name: sessionCookie, Value: "", Path: "/", MaxAge: -1,
+		HttpOnly: true, SameSite: http.SameSiteStrictMode,
+	})
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request, userID string) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w, http.MethodGet)
+		return
+	}
+	s.deliverPending(userID)
+	bootstrap, err := s.store.Bootstrap(userID, s.hub.onlineIDs())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, bootstrap)
+}
+
+func (s *Server) handleProfile(w http.ResponseWriter, r *http.Request, userID string) {
+	if r.Method != http.MethodPatch {
+		methodNotAllowed(w, http.MethodPatch)
+		return
+	}
+	var request struct {
+		Name      string `json:"name"`
+		Signature string `json:"signature"`
+	}
+	if !decodeJSON(w, r, &request) {
+		return
+	}
+	user, previousName, err := s.store.UpdateProfile(userID, request.Name, request.Signature)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	s.hub.broadcast(map[string]any{
+		"type": "profile", "previousName": previousName,
+		"member": chat.MemberView{Name: user.Name, Online: s.hub.isOnline(userID), Signature: user.Signature},
+	})
+	writeJSON(w, http.StatusOK, user)
+}
+
+func (s *Server) handlePassword(w http.ResponseWriter, r *http.Request, userID string) {
+	if r.Method != http.MethodPatch {
+		methodNotAllowed(w, http.MethodPatch)
+		return
+	}
+	var request struct {
+		CurrentPassword string `json:"currentPassword"`
+		NewPassword     string `json:"newPassword"`
+	}
+	if !decodeJSON(w, r, &request) {
+		return
+	}
+	if err := s.store.UpdatePassword(userID, request.CurrentPassword, request.NewPassword); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request, userID string) {
+	if r.Method != http.MethodPatch {
+		methodNotAllowed(w, http.MethodPatch)
+		return
+	}
+	var settings chat.Settings
+	if !decodeJSON(w, r, &settings) {
+		return
+	}
+	if err := s.store.UpdateSettings(userID, settings); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleClearConversation(w http.ResponseWriter, r *http.Request, userID string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w, http.MethodPost)
+		return
+	}
+	var request struct {
+		Target string `json:"target"`
+	}
+	if !decodeJSON(w, r, &request) {
+		return
+	}
+	if err := s.store.ClearConversation(userID, request.Target); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleDeleteFriend(w http.ResponseWriter, r *http.Request, userID string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w, http.MethodPost)
+		return
+	}
+	var request struct {
+		Name string `json:"name"`
+	}
+	if !decodeJSON(w, r, &request) {
+		return
+	}
+	if err := s.store.DeleteFriend(userID, request.Name); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleFriendColor(w http.ResponseWriter, r *http.Request, userID string) {
+	if r.Method != http.MethodPatch {
+		methodNotAllowed(w, http.MethodPatch)
+		return
+	}
+	var request struct {
+		Name  string `json:"name"`
+		Color string `json:"color"`
+	}
+	if !decodeJSON(w, r, &request) {
+		return
+	}
+	if err := s.store.SetFriendColor(userID, request.Name, request.Color); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request, userID string) {
+	connection, err := s.upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		return
+	}
+	client := &socketClient{userID: userID, conn: connection, send: make(chan []byte, 64)}
+	firstConnection := s.hub.add(client)
+	if firstConnection {
+		if user, err := s.store.User(userID); err == nil {
+			s.hub.broadcast(map[string]any{
+				"type": "presence", "name": user.Name, "online": true, "signature": user.Signature,
+			})
+		}
+	}
+	s.deliverPending(userID)
+
+	go s.writePump(client)
+	s.readPump(client)
+	lastConnection := s.hub.remove(client)
+	_ = connection.Close()
+	if lastConnection {
+		if user, err := s.store.User(userID); err == nil {
+			s.hub.broadcast(map[string]any{
+				"type": "presence", "name": user.Name, "online": false, "signature": user.Signature,
+			})
+		}
+	}
+}
+
+func (s *Server) readPump(client *socketClient) {
+	defer func() { _ = client.conn.Close() }()
+	client.conn.SetReadLimit(16 * 1024)
+	_ = client.conn.SetReadDeadline(time.Now().Add(70 * time.Second))
+	client.conn.SetPongHandler(func(string) error {
+		return client.conn.SetReadDeadline(time.Now().Add(70 * time.Second))
+	})
+	for {
+		var command struct {
+			Type  string `json:"type"`
+			Scope string `json:"scope"`
+			To    string `json:"to"`
+			Text  string `json:"text"`
+		}
+		if err := client.conn.ReadJSON(&command); err != nil {
+			return
+		}
+		if command.Type != "message" {
+			continue
+		}
+		targetID := s.store.IDForName(command.To)
+		message, targetID, err := s.store.SendMessage(
+			client.userID, command.Scope, command.To, command.Text, s.hub.isOnline(targetID),
+		)
+		if err != nil {
+			s.hub.sendTo(client.userID, map[string]any{"type": "error", "message": err.Error()})
+			continue
+		}
+		s.dispatchMessage(client.userID, targetID, command.To, message)
+	}
+}
+
+func (s *Server) writePump(client *socketClient) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case payload, ok := <-client.send:
+			_ = client.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			if !ok {
+				_ = client.conn.WriteMessage(websocket.CloseMessage, []byte{})
+				return
+			}
+			if err := client.conn.WriteMessage(websocket.TextMessage, payload); err != nil {
+				return
+			}
+		case <-ticker.C:
+			_ = client.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			if err := client.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				return
+			}
+		}
+	}
+}
+
+func (s *Server) dispatchMessage(senderID, targetID, targetName string, message *chat.Message) {
+	if message.Kind == "group" {
+		s.hub.broadcast(map[string]any{
+			"type": "message", "conversation": "group", "message": s.store.MessageView(senderID, message),
+		})
+		return
+	}
+
+	s.hub.sendTo(senderID, map[string]any{
+		"type": "message", "conversation": "dm:" + targetName,
+		"friend": targetName, "message": s.store.MessageView(senderID, message),
+	})
+	if targetID == chat.CocoID {
+		return
+	}
+	senderName := s.store.NameForID(senderID)
+	s.hub.sendTo(targetID, map[string]any{
+		"type": "message", "conversation": "dm:" + senderName,
+		"friend": senderName, "message": s.store.MessageView(targetID, message),
+	})
+}
+
+func (s *Server) deliverPending(userID string) {
+	notices, err := s.store.MarkDelivered(userID)
+	if err != nil {
+		return
+	}
+	for _, notice := range notices {
+		s.hub.sendTo(notice.SenderID, map[string]any{
+			"type": "delivered", "messageId": notice.MessageID,
+		})
+	}
+}
+
+func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		methodNotAllowed(w, http.MethodGet, http.MethodHead)
+		return
+	}
+	files := map[string]string{
+		"/": "/index.html", "/index.html": "/index.html",
+		"/styles.css": "/styles.css", "/app.js": "/app.js",
+	}
+	name, ok := files[r.URL.Path]
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	http.ServeFile(w, r, filepath.Join(s.config.StaticDir, name))
+}
+
+func (s *Server) setSession(w http.ResponseWriter, userID string) {
+	token := randomToken()
+	expires := time.Now().Add(30 * 24 * time.Hour)
+	s.sessionM.Lock()
+	s.sessions[token] = session{userID: userID, expiresAt: expires}
+	s.sessionM.Unlock()
+	http.SetCookie(w, &http.Cookie{
+		Name: sessionCookie, Value: token, Path: "/", Expires: expires,
+		HttpOnly: true, SameSite: http.SameSiteStrictMode,
+	})
+}
+
+func (s *Server) authenticatedUser(r *http.Request) (string, bool) {
+	cookie, err := r.Cookie(sessionCookie)
+	if err != nil {
+		return "", false
+	}
+	s.sessionM.Lock()
+	defer s.sessionM.Unlock()
+	current, ok := s.sessions[cookie.Value]
+	if !ok || time.Now().After(current.expiresAt) {
+		delete(s.sessions, cookie.Value)
+		return "", false
+	}
+	return current.userID, true
+}
+
+type authenticatedHandler func(http.ResponseWriter, *http.Request, string)
+
+func (s *Server) requireAuth(next authenticatedHandler) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, ok := s.authenticatedUser(r)
+		if !ok {
+			writeError(w, http.StatusUnauthorized, chat.ErrUnauthorized)
+			return
+		}
+		next(w, r, userID)
+	}
+}
+
+func (s *Server) securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; connect-src 'self' ws: wss:; style-src 'self'; script-src 'self'; base-uri 'none'; frame-ancestors 'none'")
+		next.ServeHTTP(w, r)
+	})
+}
+
+func decodeJSON(w http.ResponseWriter, r *http.Request, target any) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		writeError(w, http.StatusBadRequest, errors.New("请求格式不正确"))
+		return false
+	}
+	return true
+}
+
+func writeJSON(w http.ResponseWriter, status int, value any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(value)
+}
+
+func writeError(w http.ResponseWriter, status int, err error) {
+	writeJSON(w, status, map[string]string{"error": err.Error()})
+}
+
+func methodNotAllowed(w http.ResponseWriter, methods ...string) {
+	w.Header().Set("Allow", strings.Join(methods, ", "))
+	writeError(w, http.StatusMethodNotAllowed, errors.New("请求方法不允许"))
+}
+
+func randomToken() string {
+	buffer := make([]byte, 32)
+	if _, err := rand.Read(buffer); err != nil {
+		panic(fmt.Errorf("生成会话令牌: %w", err))
+	}
+	return hex.EncodeToString(buffer)
+}

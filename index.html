@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#20201d">
+  <title>耳语 · whisper</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body data-theme="dune">
+  <section id="auth-panel" class="auth-panel" aria-labelledby="auth-title" hidden>
+    <div class="auth-shell">
+      <h1 id="auth-title">耳语 / whisper</h1>
+      <div class="auth-modes" role="tablist" aria-label="账户操作">
+        <button id="auth-login-mode" class="active" type="button" role="tab" aria-selected="true">登录</button>
+        <button id="auth-register-mode" type="button" role="tab" aria-selected="false">注册</button>
+      </div>
+      <form id="auth-form" autocomplete="on">
+        <label class="field" for="auth-name">
+          <span>个人名称</span>
+          <input id="auth-name" name="username" type="text" maxlength="7" autocomplete="username" required>
+        </label>
+        <label class="field" for="auth-password">
+          <span>登录密码</span>
+          <input id="auth-password" name="password" type="password" minlength="1" autocomplete="current-password" required>
+        </label>
+        <div class="form-actions">
+          <button id="auth-submit" class="command-button" type="submit">登录</button>
+          <span id="auth-status" class="form-status" role="status"></span>
+        </div>
+      </form>
+    </div>
+  </section>
+
+  <main id="app-main" class="container">
+    <header id="conversation-header" class="conversation-header messages">
+      <button id="back-to-group" class="conversation-back" type="button" aria-label="返回群聊" title="返回群聊" hidden>←</button>
+      <div class="conversation-heading">
+        <h1 id="conversation-title"># 群聊</h1>
+        <p id="conversation-meta">
+          <span id="conversation-status">5 人在线</span>
+          <span id="profile-signature" hidden></span>
+        </p>
+      </div>
+    </header>
+    <section id="messages" class="messages" aria-label="聊天消息" aria-live="polite"></section>
+    <section id="profile-panel" class="profile-panel messages" aria-label="个人设置" hidden>
+      <form id="profile-form" class="settings-section" autocomplete="off">
+        <h2>个人资料</h2>
+        <label class="field" for="profile-name">
+          <span>个人名称</span>
+          <input id="profile-name" name="profile-name" type="text" maxlength="7" required>
+        </label>
+        <label class="field" for="profile-signature-input">
+          <span>个性签名</span>
+          <textarea id="profile-signature-input" name="profile-signature" rows="3" maxlength="240"></textarea>
+        </label>
+        <div class="form-actions">
+          <button class="command-button" type="submit">保存资料</button>
+          <span id="profile-save-status" class="form-status" role="status"></span>
+        </div>
+      </form>
+
+      <form id="password-form" class="settings-section" autocomplete="off">
+        <h2>登录密码</h2>
+        <label class="field" for="current-password">
+          <span>当前密码</span>
+          <input id="current-password" name="current-password" type="password" autocomplete="current-password" required>
+        </label>
+        <label class="field" for="new-password">
+          <span>新密码</span>
+          <input id="new-password" name="new-password" type="password" autocomplete="new-password" minlength="1" required>
+        </label>
+        <label class="field" for="confirm-password">
+          <span>确认新密码</span>
+          <input id="confirm-password" name="confirm-password" type="password" autocomplete="new-password" minlength="1" required>
+        </label>
+        <div class="form-actions">
+          <button class="command-button" type="submit">更新密码</button>
+          <span id="password-save-status" class="form-status" role="status"></span>
+        </div>
+      </form>
+
+      <section class="settings-section" aria-labelledby="chat-settings-title">
+        <h2 id="chat-settings-title">聊天设置</h2>
+        <p>
+          <input id="show-message-time" type="checkbox" checked>
+          <label for="show-message-time">显示消息时间</label>
+        </p>
+        <p>
+          <input id="parse-latex" type="checkbox" checked>
+          <label for="parse-latex">解析数学公式</label>
+        </p>
+        <label class="field" for="scheme-selector">
+          <span>配色方案</span>
+          <select id="scheme-selector" aria-label="配色方案">
+            <option value="dune">沙丘</option>
+            <option value="ocean">海洋</option>
+            <option value="paper">纸张</option>
+          </select>
+        </label>
+        <p>
+          <button id="clear-messages" type="button">清空群聊记录</button>
+        </p>
+        <p>
+          <button id="logout" type="button">退出登录</button>
+        </p>
+      </section>
+    </section>
+  </main>
+
+  <footer id="footer">
+    <div class="container">
+      <form id="chatform" class="messages" autocomplete="off">
+        <textarea
+          id="chatinput"
+          rows="1"
+          maxlength="2000"
+          placeholder="发送到群聊..."
+          aria-label="消息"
+          autofocus
+        ></textarea>
+        <button id="send-message" class="send-button" type="submit" aria-label="发送消息" title="发送消息">
+          <span aria-hidden="true">&#8593;</span>
+        </button>
+      </form>
+    </div>
+  </footer>
+
+  <aside id="sidebar" aria-label="会话列表">
+    <button id="sidebar-toggle" class="icon-button" type="button" aria-label="打开会话列表" title="会话列表">
+      <span></span>
+      <span></span>
+      <span></span>
+    </button>
+
+    <div id="sidebar-content" hidden>
+      <p>
+        <input id="pin-sidebar" type="checkbox">
+        <label for="pin-sidebar">固定侧栏</label>
+      </p>
+
+      <h4>会话</h4>
+      <ul id="conversation-list">
+        <li>
+          <button id="group-conversation" class="conversation-entry active" type="button" aria-current="page">
+            <span># 群聊</span>
+            <span id="group-count" class="conversation-count">5</span>
+          </button>
+        </li>
+      </ul>
+
+      <h4>好友</h4>
+      <ul id="friends"></ul>
+      <p id="friends-empty" class="list-empty" hidden>暂无好友</p>
+
+      <h4>在线成员</h4>
+      <ul id="users"></ul>
+    </div>
+  </aside>
+
+  <div id="friend-menu" class="context-menu" role="menu" aria-label="好友操作" hidden>
+    <div class="friend-color-section" role="group" aria-label="消息文字颜色">
+      <span class="context-menu-label">消息文字颜色</span>
+      <div id="friend-color-options" class="friend-color-options">
+        <button class="friend-color-swatch default" type="button" role="menuitemradio" data-friend-color="default" aria-label="默认颜色" aria-checked="false" title="默认颜色"></button>
+        <button class="friend-color-swatch green" type="button" role="menuitemradio" data-friend-color="green" aria-label="绿色" aria-checked="false" title="绿色"></button>
+        <button class="friend-color-swatch blue" type="button" role="menuitemradio" data-friend-color="blue" aria-label="蓝色" aria-checked="false" title="蓝色"></button>
+        <button class="friend-color-swatch cyan" type="button" role="menuitemradio" data-friend-color="cyan" aria-label="青色" aria-checked="false" title="青色"></button>
+        <button class="friend-color-swatch amber" type="button" role="menuitemradio" data-friend-color="amber" aria-label="琥珀色" aria-checked="false" title="琥珀色"></button>
+        <button class="friend-color-swatch rose" type="button" role="menuitemradio" data-friend-color="rose" aria-label="玫红色" aria-checked="false" title="玫红色"></button>
+      </div>
+      <span id="friend-color-status" class="context-menu-status" role="status"></span>
+    </div>
+    <div class="context-menu-separator"></div>
+    <button id="clear-friend-messages" type="button" role="menuitem">清空消息记录</button>
+    <button id="delete-friend" class="danger" type="button" role="menuitem">删除好友</button>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
