@@ -1,16 +1,23 @@
 package chat
 
 import (
+	"encoding/json"
+	"os"
 	"path/filepath"
 	"testing"
 )
 
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
-	store, err := NewStore(filepath.Join(t.TempDir(), "state.json"))
+	directory := t.TempDir()
+	store, err := NewStore(StoreConfig{
+		DatabasePath:   filepath.Join(directory, "whisper.db"),
+		UserBackupPath: filepath.Join(directory, "users-backup.json"),
+	})
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
+	t.Cleanup(func() { _ = store.Close() })
 	return store
 }
 
@@ -164,5 +171,106 @@ func TestFriendColorPersistsAcrossRename(t *testing.T) {
 	}
 	if _, exists := view.FriendColors["alice2"]; exists {
 		t.Fatal("friend color remained after deleting the friend")
+	}
+}
+
+func TestSQLitePersistsAcrossRestart(t *testing.T) {
+	directory := t.TempDir()
+	config := StoreConfig{
+		DatabasePath:   filepath.Join(directory, "whisper.db"),
+		UserBackupPath: filepath.Join(directory, "users-backup.json"),
+	}
+	store, err := NewStore(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	alice, err := store.Register("alice", "secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.SendMessage(alice.ID, "group", "", "persisted", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err = NewStore(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := store.Authenticate("alice", "secret"); err != nil {
+		t.Fatal(err)
+	}
+	view, err := store.Bootstrap(alice.ID, map[string]bool{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(view.Conversations["group"]) != 1 || view.Conversations["group"][0].Text != "persisted" {
+		t.Fatalf("messages after restart = %#v", view.Conversations["group"])
+	}
+}
+
+func TestPlaintextUserBackup(t *testing.T) {
+	directory := t.TempDir()
+	backupPath := filepath.Join(directory, "users-backup.json")
+	store, err := NewStore(StoreConfig{
+		DatabasePath: filepath.Join(directory, "whisper.db"), UserBackupPath: backupPath,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	user, err := store.Register("alice", "plain-text-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.UpdateProfile(user.ID, "alice2", "signature"); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := os.Stat(backupPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("backup permissions = %o, want 600", got)
+	}
+	data, err := os.ReadFile(backupPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var backup plaintextBackup
+	if err := json.Unmarshal(data, &backup); err != nil {
+		t.Fatal(err)
+	}
+	if len(backup.Users) != 1 {
+		t.Fatalf("backup users = %d, want 1", len(backup.Users))
+	}
+	got := backup.Users[0]
+	if got.Name != "alice2" || got.Password != "plain-text-password" || !got.PasswordKnown {
+		t.Fatalf("unexpected backup user: %#v", got)
+	}
+	if got.PasswordHash == "" || got.Signature != "signature" {
+		t.Fatalf("incomplete backup user: %#v", got)
+	}
+}
+
+func TestLegacyJSONIsIgnored(t *testing.T) {
+	directory := t.TempDir()
+	if err := os.WriteFile(filepath.Join(directory, "state.json"), []byte("not valid json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewStore(StoreConfig{
+		DatabasePath:   filepath.Join(directory, "whisper.db"),
+		UserBackupPath: filepath.Join(directory, "users-backup.json"),
+	})
+	if err != nil {
+		t.Fatalf("legacy JSON should be ignored: %v", err)
+	}
+	defer store.Close()
+	if _, err := store.Register("fresh", "x"); err != nil {
+		t.Fatal(err)
 	}
 }

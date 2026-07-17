@@ -1,4 +1,9 @@
 .DS_Store
 /data/state.json
 /data/state.json.tmp
+/data/*.db
+/data/*.db-shm
+/data/*.db-wal
+/data/users-backup.json
+/data/users-backup.json.tmp
 /whisper

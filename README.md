@@ -1,6 +1,6 @@
 # 耳语（whisper）
 
-耳语是一个参考 `tmpchat.com` 极简布局重新实现的单机聊天应用，包含原生前端、Go HTTP API、WebSocket 实时通信和 JSON 持久化。
+耳语是一个参考 `tmpchat.com` 极简布局重新实现的单机聊天应用，包含原生前端、Go HTTP API、WebSocket 实时通信和 SQLite 持久化。
 
 ## 使用
 
@@ -9,7 +9,7 @@
 运行完整应用：
 
 ```bash
-go run ./cmd/whisper -addr 127.0.0.1:8080 -data data/state.json -static .
+go run ./cmd/whisper -addr 127.0.0.1:8080 -db data/whisper.db -users-backup data/users-backup.json -static .
 ```
 
 然后打开 [http://127.0.0.1:8080](http://127.0.0.1:8080)，注册第一个账户。
@@ -39,4 +39,4 @@ go run ./cmd/whisper -addr 127.0.0.1:8080 -data data/state.json -static .
 - 时间、公式和配色设置集中在个人配置页面
 - 全中文界面
 
-通过 Go 服务运行时，账户、好友、消息和设置保存在 `data/state.json`；直接打开 HTML 时仍使用浏览器内存和本地存储演示。
+通过 Go 服务运行时，账户、好友、消息和设置保存在 `data/whisper.db`；用户资料和明文密码另存到权限为 `0600` 的 `data/users-backup.json`。这两个文件都不会提交到 Git。直接打开 HTML 时仍使用浏览器内存和本地存储演示。

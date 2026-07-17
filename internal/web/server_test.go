@@ -27,10 +27,14 @@ func newTestServer(t *testing.T) (*httptest.Server, *http.Client) {
 			t.Fatal(err)
 		}
 	}
-	store, err := chat.NewStore(filepath.Join(directory, "state.json"))
+	store, err := chat.NewStore(chat.StoreConfig{
+		DatabasePath:   filepath.Join(directory, "whisper.db"),
+		UserBackupPath: filepath.Join(directory, "users-backup.json"),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = store.Close() })
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	server := httptest.NewServer(NewServer(Config{StaticDir: directory}, store, logger).Handler())
 	jar, err := cookiejar.New(nil)
