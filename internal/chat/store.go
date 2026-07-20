@@ -28,7 +28,7 @@ const (
 	MaxNameRunes    = 7
 	MaxMessage      = 2000
 	MaxGroupName    = 32
-	schemaVersion   = 4
+	schemaVersion   = 5
 )
 
 var (
@@ -39,6 +39,7 @@ var (
 
 type Settings struct {
 	ShowMessageTime bool   `json:"showMessageTime"`
+	FullMessageTime bool   `json:"fullMessageTime"`
 	ParseLatex      bool   `json:"parseLatex"`
 	Theme           string `json:"theme"`
 }
@@ -253,6 +254,7 @@ func (s *Store) initializeSchema() error {
 			password_hash TEXT NOT NULL,
 			signature TEXT NOT NULL DEFAULT '',
 			show_message_time INTEGER NOT NULL DEFAULT 1,
+			full_message_time INTEGER NOT NULL DEFAULT 0,
 			parse_latex INTEGER NOT NULL DEFAULT 1,
 			theme TEXT NOT NULL DEFAULT 'dune',
 			created_at TEXT NOT NULL
@@ -316,7 +318,7 @@ func (s *Store) initializeSchema() error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS messages_sent_at_idx ON messages(sent_at, id)`,
 		`CREATE INDEX IF NOT EXISTS messages_recipient_idx ON messages(to_id, delivered_at)`,
-		`INSERT INTO meta(key, value) VALUES ('schema_version', '4')
+		`INSERT INTO meta(key, value) VALUES ('schema_version', '5')
 			ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
 	}
 	for _, statement := range statements {
@@ -360,6 +362,32 @@ func (s *Store) migrateGroups() error {
 			return err
 		}
 	}
+	userColumns, err := tx.Query(`PRAGMA table_info(users)`)
+	if err != nil {
+		return err
+	}
+	hasFullMessageTime := false
+	for userColumns.Next() {
+		var cid int
+		var name, columnType string
+		var notNull, primaryKey int
+		var defaultValue sql.NullString
+		if err := userColumns.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			userColumns.Close()
+			return err
+		}
+		if name == "full_message_time" {
+			hasFullMessageTime = true
+		}
+	}
+	if err := userColumns.Close(); err != nil {
+		return err
+	}
+	if !hasFullMessageTime {
+		if _, err := tx.Exec(`ALTER TABLE users ADD COLUMN full_message_time INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
+	}
 	now := time.Now().Format(time.RFC3339Nano)
 	if _, err := tx.Exec(`INSERT OR IGNORE INTO groups(id, name, signature, owner_id, history_visible, system, created_at)
 		VALUES (?, ?, '', NULL, 1, 1, ?)`, PublicGroupID, PublicGroupName, now); err != nil {
@@ -393,7 +421,7 @@ func (s *Store) migrateGroups() error {
 }
 
 func DefaultSettings() Settings {
-	return Settings{ShowMessageTime: true, ParseLatex: true, Theme: "dune"}
+	return Settings{ShowMessageTime: true, FullMessageTime: false, ParseLatex: true, Theme: "dune"}
 }
 
 func ValidateName(name string) error {
@@ -441,8 +469,8 @@ func (s *Store) Register(name, password string) (SelfView, error) {
 		ID: randomID(), Name: name, PasswordHash: string(hash), Settings: DefaultSettings(), CreatedAt: now,
 	}
 	if _, err := tx.Exec(`INSERT INTO users(
-		id, name, password_hash, signature, show_message_time, parse_latex, theme, created_at
-	) VALUES (?, ?, ?, '', 1, 1, 'dune', ?)`, user.ID, user.Name, user.PasswordHash, now.Format(time.RFC3339Nano)); err != nil {
+		id, name, password_hash, signature, show_message_time, full_message_time, parse_latex, theme, created_at
+	) VALUES (?, ?, ?, '', 1, 0, 1, 'dune', ?)`, user.ID, user.Name, user.PasswordHash, now.Format(time.RFC3339Nano)); err != nil {
 		if isUniqueError(err) {
 			return SelfView{}, ErrNameTaken
 		}
@@ -682,8 +710,8 @@ func (s *Store) UpdateSettings(userID string, settings Settings) error {
 	if settings.Theme != "dune" && settings.Theme != "ocean" && settings.Theme != "paper" {
 		return errors.New("未知配色方案")
 	}
-	result, err := s.db.Exec(`UPDATE users SET show_message_time = ?, parse_latex = ?, theme = ? WHERE id = ?`,
-		boolInt(settings.ShowMessageTime), boolInt(settings.ParseLatex), settings.Theme, userID)
+	result, err := s.db.Exec(`UPDATE users SET show_message_time = ?, full_message_time = ?, parse_latex = ?, theme = ? WHERE id = ?`,
+		boolInt(settings.ShowMessageTime), boolInt(settings.FullMessageTime), boolInt(settings.ParseLatex), settings.Theme, userID)
 	if err != nil {
 		return err
 	}
@@ -1110,7 +1138,7 @@ func (s *Store) writeUserBackupLocked() error {
 }
 
 func allUsers(q queryer) ([]*databaseUser, error) {
-	rows, err := q.Query(`SELECT id, name, password_hash, signature, show_message_time, parse_latex, theme, created_at
+	rows, err := q.Query(`SELECT id, name, password_hash, signature, show_message_time, full_message_time, parse_latex, theme, created_at
 		FROM users ORDER BY created_at, name`)
 	if err != nil {
 		return nil, err
@@ -1141,7 +1169,7 @@ func findUserByName(q queryer, name string) (*databaseUser, error) {
 }
 
 func userByID(q queryer, id string) (*databaseUser, error) {
-	row := q.QueryRow(`SELECT id, name, password_hash, signature, show_message_time, parse_latex, theme, created_at
+	row := q.QueryRow(`SELECT id, name, password_hash, signature, show_message_time, full_message_time, parse_latex, theme, created_at
 		FROM users WHERE id = ?`, id)
 	user, err := scanUser(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -1152,10 +1180,10 @@ func userByID(q queryer, id string) (*databaseUser, error) {
 
 func scanUser(scanner rowScanner) (*databaseUser, error) {
 	var user databaseUser
-	var showMessageTime, parseLatex int
+	var showMessageTime, fullMessageTime, parseLatex int
 	var createdAt string
 	if err := scanner.Scan(&user.ID, &user.Name, &user.PasswordHash, &user.Signature,
-		&showMessageTime, &parseLatex, &user.Settings.Theme, &createdAt); err != nil {
+		&showMessageTime, &fullMessageTime, &parseLatex, &user.Settings.Theme, &createdAt); err != nil {
 		return nil, err
 	}
 	parsedCreatedAt, err := time.Parse(time.RFC3339Nano, createdAt)
@@ -1163,6 +1191,7 @@ func scanUser(scanner rowScanner) (*databaseUser, error) {
 		return nil, err
 	}
 	user.Settings.ShowMessageTime = showMessageTime != 0
+	user.Settings.FullMessageTime = fullMessageTime != 0
 	user.Settings.ParseLatex = parseLatex != 0
 	user.CreatedAt = parsedCreatedAt
 	return &user, nil

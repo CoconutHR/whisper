@@ -3,6 +3,8 @@ const RESERVED_NICKNAME = "coco";
 const PUBLIC_GROUP_ID = "public";
 const PUBLIC_GROUP_NAME = "公共大厅";
 const PUBLIC_GROUP_CONVERSATION = `group:${PUBLIC_GROUP_ID}`;
+const DEFAULT_DOCUMENT_TITLE = document.title;
+const NEW_MESSAGE_TITLE = `【新消息】${DEFAULT_DOCUMENT_TITLE}    `;
 const HTTP_PROTOCOLS = new Set(["http:", "https:"]);
 const FRIEND_MESSAGE_COLORS = new Set(["default", "green", "blue", "cyan", "amber", "rose"]);
 const STORAGE_KEY_MIGRATIONS = [
@@ -11,6 +13,7 @@ const STORAGE_KEY_MIGRATIONS = [
   ["tmpchat-friend-colors", "whisper-friend-colors"],
   ["tmpchat-pin-sidebar", "whisper-pin-sidebar"],
   ["tmpchat-show-message-time", "whisper-show-message-time"],
+  ["tmpchat-full-message-time", "whisper-full-message-time"],
   ["tmpchat-parse-latex", "whisper-parse-latex"],
   ["tmpchat-theme", "whisper-theme"]
 ];
@@ -140,6 +143,8 @@ const state = {
 };
 
 const nudgeTimers = new Map();
+let titleScrollTimer = null;
+let titleScrollOffset = 0;
 
 function persistDemoFriendColors() {
   localStorage.setItem(
@@ -195,6 +200,7 @@ const newPasswordEl = document.querySelector("#new-password");
 const confirmPasswordEl = document.querySelector("#confirm-password");
 const passwordSaveStatusEl = document.querySelector("#password-save-status");
 const showMessageTimeEl = document.querySelector("#show-message-time");
+const fullMessageTimeEl = document.querySelector("#full-message-time");
 const parseLatexEl = document.querySelector("#parse-latex");
 const clearMessagesEl = document.querySelector("#clear-messages");
 const schemeSelectorEl = document.querySelector("#scheme-selector");
@@ -311,6 +317,7 @@ function stopConversationNudge(conversationId) {
 function clearConversationUnread(conversationId) {
   state.unreadCounts.delete(conversationId);
   stopConversationNudge(conversationId);
+  updateDocumentTitle();
 }
 
 function resetUnreadState() {
@@ -318,6 +325,28 @@ function resetUnreadState() {
   nudgeTimers.clear();
   state.unreadCounts.clear();
   state.nudgingConversations.clear();
+  updateDocumentTitle();
+}
+
+function updateDocumentTitle() {
+  if (totalUnreadCount() === 0) {
+    if (titleScrollTimer !== null) {
+      window.clearInterval(titleScrollTimer);
+      titleScrollTimer = null;
+    }
+    titleScrollOffset = 0;
+    document.title = DEFAULT_DOCUMENT_TITLE;
+    return;
+  }
+
+  if (titleScrollTimer !== null) return;
+  const scrollTitle = () => {
+    const offset = titleScrollOffset % NEW_MESSAGE_TITLE.length;
+    document.title = NEW_MESSAGE_TITLE.slice(offset) + NEW_MESSAGE_TITLE.slice(0, offset);
+    titleScrollOffset += 1;
+  };
+  scrollTitle();
+  titleScrollTimer = window.setInterval(scrollTitle, 200);
 }
 
 function markConversationUnread(conversationId) {
@@ -330,6 +359,7 @@ function markConversationUnread(conversationId) {
     nudgeTimers.delete(conversationId);
     renderFriends();
   }, 700));
+  updateDocumentTitle();
 }
 
 function pad(value, length = 2) {
@@ -529,22 +559,42 @@ function createMessageMeta(message, canMention) {
     const time = document.createElement("time");
     const fullTime = formatFullMessageTime(message.sentAt);
     const { clock, context } = messageTimeParts(message.sentAt);
+    const defaultsToFullTime = fullMessageTimeEl.checked;
     time.className = "message-time";
     time.dateTime = message.sentAt;
-    time.title = fullTime;
     time.setAttribute("aria-label", fullTime);
 
     const clockEl = document.createElement("span");
     clockEl.className = "message-clock";
     clockEl.textContent = clock;
-    time.append(clockEl);
+    const compactTimeChildren = [clockEl];
+    const fullTimeEl = document.createElement("span");
+    fullTimeEl.className = "message-full-time";
+    fullTimeEl.textContent = fullTime;
 
     if (context) {
       const contextEl = document.createElement("span");
       contextEl.className = "message-date-context";
       contextEl.textContent = context;
-      time.append(contextEl);
+      compactTimeChildren.push(contextEl);
     }
+
+    const showFullTime = () => {
+      time.replaceChildren(fullTimeEl);
+      time.classList.add("expanded");
+      meta.classList.add("time-expanded");
+    };
+    const showCompactTime = () => {
+      time.replaceChildren(...compactTimeChildren);
+      time.classList.remove("expanded");
+      meta.classList.remove("time-expanded");
+    };
+    const showDefaultTime = defaultsToFullTime ? showFullTime : showCompactTime;
+    const showAlternateTime = defaultsToFullTime ? showCompactTime : showFullTime;
+
+    showDefaultTime();
+    time.addEventListener("mouseenter", showAlternateTime);
+    time.addEventListener("mouseleave", showDefaultTime);
     meta.append(time);
   }
 
@@ -1124,6 +1174,7 @@ function hydrateBootstrap(payload) {
   if (!state.conversations[PUBLIC_GROUP_CONVERSATION]) state.conversations[PUBLIC_GROUP_CONVERSATION] = [];
 
   showMessageTimeEl.checked = payload.self.settings.showMessageTime;
+  fullMessageTimeEl.checked = payload.self.settings.fullMessageTime;
   parseLatexEl.checked = payload.self.settings.parseLatex;
   schemeSelectorEl.value = payload.self.settings.theme || "dune";
   document.body.dataset.theme = schemeSelectorEl.value;
@@ -1337,7 +1388,22 @@ formEl.addEventListener("submit", (event) => {
   inputEl.focus();
 });
 
+let messageInputComposing = false;
+
+inputEl.addEventListener("compositionstart", () => {
+  messageInputComposing = true;
+});
+
+inputEl.addEventListener("compositionend", () => {
+  messageInputComposing = false;
+});
+
+inputEl.addEventListener("compositioncancel", () => {
+  messageInputComposing = false;
+});
+
 inputEl.addEventListener("keydown", (event) => {
+  if (messageInputComposing || event.isComposing || event.keyCode === 229) return;
   if (event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();
     sendCurrentMessage();
@@ -1561,6 +1627,7 @@ async function persistSettings() {
         method: "PATCH",
         body: {
           showMessageTime: showMessageTimeEl.checked,
+          fullMessageTime: fullMessageTimeEl.checked,
           parseLatex: parseLatexEl.checked,
           theme: schemeSelectorEl.value
         }
@@ -1571,12 +1638,19 @@ async function persistSettings() {
     return;
   }
   localStorage.setItem("whisper-show-message-time", String(showMessageTimeEl.checked));
+  localStorage.setItem("whisper-full-message-time", String(fullMessageTimeEl.checked));
   localStorage.setItem("whisper-parse-latex", String(parseLatexEl.checked));
   localStorage.setItem("whisper-theme", schemeSelectorEl.value);
 }
 
 showMessageTimeEl.addEventListener("change", () => {
   persistSettings();
+  renderMessages();
+});
+
+fullMessageTimeEl.addEventListener("change", () => {
+  persistSettings();
+  renderMessages();
 });
 
 parseLatexEl.addEventListener("change", () => {
@@ -1720,6 +1794,7 @@ window.whisperDemo = {
 
 pinSidebarEl.checked = localStorage.getItem("whisper-pin-sidebar") === "true";
 showMessageTimeEl.checked = localStorage.getItem("whisper-show-message-time") !== "false";
+fullMessageTimeEl.checked = localStorage.getItem("whisper-full-message-time") === "true";
 parseLatexEl.checked = localStorage.getItem("whisper-parse-latex") !== "false";
 setSidebar(pinSidebarEl.checked);
 setAuthMode("login");

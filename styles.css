@@ -364,10 +364,15 @@ body[data-conversation-kind="profile"] .conversation-heading h1 {
   gap: 0.75em;
   overflow: hidden;
   color: var(--muted);
-  cursor: help;
+  cursor: default;
   font-size: 14px;
+  line-height: 20px;
   opacity: 0.78;
   text-align: left;
+}
+
+.message-time.expanded {
+  max-width: 19em;
 }
 
 .message-clock {
@@ -1027,6 +1032,19 @@ body[data-conversation-kind="profile"] .conversation-heading h1 {
   }
 }
 
+@media (min-width: 1200px) {
+  .message-meta.time-expanded {
+    max-width: 24em;
+    grid-template-columns: fit-content(19em) 4em;
+    align-items: start;
+  }
+
+  .message-time.expanded {
+    justify-self: end;
+    text-align: right;
+  }
+}
+
 @media (max-width: 1199px) and (min-width: 601px) {
   .container {
     transform: none;
@@ -1089,6 +1107,7 @@ body[data-conversation-kind="profile"] .conversation-heading h1 {
   .message-meta .message-time {
     grid-row: 1;
     grid-column: 2;
+    max-width: 100%;
     justify-self: end;
   }
 

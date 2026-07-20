@@ -62,6 +62,30 @@ func TestOneCharacterPassword(t *testing.T) {
 	}
 }
 
+func TestFullMessageTimeSetting(t *testing.T) {
+	store := newTestStore(t)
+	user, err := store.Register("alice", "password123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if user.Settings.FullMessageTime {
+		t.Fatal("full message time should be disabled by default")
+	}
+
+	settings := user.Settings
+	settings.FullMessageTime = true
+	if err := store.UpdateSettings(user.ID, settings); err != nil {
+		t.Fatal(err)
+	}
+	view, err := store.Bootstrap(user.ID, map[string]bool{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !view.Self.Settings.FullMessageTime {
+		t.Fatal("full message time setting was not persisted")
+	}
+}
+
 func TestPrivateDeliveryAndCocoIsolation(t *testing.T) {
 	store := newTestStore(t)
 	alice, err := store.Register("alice", "password123")
