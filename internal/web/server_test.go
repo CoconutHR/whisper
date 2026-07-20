@@ -106,7 +106,7 @@ func TestAuthenticationAndWebSocketMessage(t *testing.T) {
 			t.Fatal(err)
 		}
 		if event["type"] == "message" {
-			if event["conversation"] != "group" {
+			if event["conversation"] != chat.GroupConversationKey(chat.PublicGroupID) {
 				t.Fatalf("conversation = %#v", event["conversation"])
 			}
 			return
@@ -147,4 +147,63 @@ func TestFriendColorAPI(t *testing.T) {
 	if got := payload.FriendColors[chat.CocoName]; got != "rose" {
 		t.Fatalf("friend color = %q, want rose", got)
 	}
+}
+
+func TestGroupAPIAndOwnerPermission(t *testing.T) {
+	server, aliceClient := newTestServer(t)
+	defer server.Close()
+	response := jsonRequest(t, aliceClient, http.MethodPost, server.URL+"/api/register", map[string]string{
+		"name": "alice", "password": "password123",
+	})
+	if response.StatusCode != http.StatusCreated {
+		t.Fatalf("alice register status = %d", response.StatusCode)
+	}
+	_ = response.Body.Close()
+	bobJar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bobClient := &http.Client{Jar: bobJar}
+	response = jsonRequest(t, bobClient, http.MethodPost, server.URL+"/api/register", map[string]string{
+		"name": "bob", "password": "password123",
+	})
+	if response.StatusCode != http.StatusCreated {
+		t.Fatalf("bob register status = %d", response.StatusCode)
+	}
+	_ = response.Body.Close()
+
+	response = jsonRequest(t, aliceClient, http.MethodPost, server.URL+"/api/groups", map[string]any{
+		"name": "项目组", "signature": "一起推进", "historyVisible": false, "members": []string{"bob"},
+	})
+	if response.StatusCode != http.StatusCreated {
+		t.Fatalf("create group status = %d", response.StatusCode)
+	}
+	var group chat.GroupView
+	if err := json.NewDecoder(response.Body).Decode(&group); err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	if !group.IsOwner || group.Name != "项目组" {
+		t.Fatalf("unexpected group response: %#v", group)
+	}
+
+	response, err = bobClient.Get(server.URL + "/api/bootstrap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var bobBootstrap chat.Bootstrap
+	if err := json.NewDecoder(response.Body).Decode(&bobBootstrap); err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	if len(bobBootstrap.Groups) != 2 {
+		t.Fatalf("bob groups = %#v", bobBootstrap.Groups)
+	}
+	response = jsonRequest(t, bobClient, http.MethodPatch, server.URL+"/api/groups", map[string]any{
+		"id": group.ID, "name": "越权修改", "members": []string{"bob"},
+	})
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("non-owner update status = %d", response.StatusCode)
+	}
+	_ = response.Body.Close()
 }

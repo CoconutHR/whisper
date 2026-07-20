@@ -36,7 +36,7 @@
     <header id="conversation-header" class="conversation-header messages">
       <button id="back-to-group" class="conversation-back" type="button" aria-label="返回群聊" title="返回群聊" hidden>←</button>
       <div class="conversation-heading">
-        <h1 id="conversation-title"># 群聊</h1>
+        <h1><button id="conversation-title" type="button"># 公共大厅</button></h1>
         <p id="conversation-meta">
           <span id="conversation-status">5 人在线</span>
           <span id="profile-signature" hidden></span>
@@ -107,6 +107,52 @@
         </p>
       </section>
     </section>
+
+    <section id="group-panel" class="profile-panel messages" aria-label="群聊信息" hidden>
+      <form id="group-form" class="settings-section" autocomplete="off">
+        <h2 id="group-panel-title">新建群聊</h2>
+        <label class="field" for="group-name-input">
+          <span>群聊名称</span>
+          <input id="group-name-input" name="group-name" type="text" maxlength="32" required>
+        </label>
+        <label class="field" for="group-signature-input">
+          <span>群个签</span>
+          <textarea id="group-signature-input" name="group-signature" rows="3" maxlength="240"></textarea>
+        </label>
+        <p id="group-history-field">
+          <input id="group-history-visible" type="checkbox">
+          <label for="group-history-visible">允许新成员查看历史消息</label>
+        </p>
+        <fieldset id="group-members-field" class="group-members-field">
+          <legend>群成员</legend>
+          <div id="group-member-options"></div>
+        </fieldset>
+        <div class="form-actions" id="group-save-actions">
+          <button id="group-save" class="command-button" type="submit">创建群聊</button>
+          <span id="group-save-status" class="form-status" role="status"></span>
+        </div>
+      </form>
+
+      <section id="group-owner-actions" class="settings-section" hidden>
+        <h2>群主操作</h2>
+        <label class="field" for="group-transfer-owner">
+          <span>转移群主</span>
+          <select id="group-transfer-owner" aria-label="转移群主"></select>
+        </label>
+        <div class="form-actions">
+          <button id="group-transfer" class="command-button" type="button">转移群主</button>
+          <button id="group-dissolve" class="danger-button" type="button">解散群聊</button>
+          <span id="group-owner-status" class="form-status" role="status"></span>
+        </div>
+      </section>
+
+      <section id="group-member-actions" class="settings-section" hidden>
+        <div class="form-actions">
+          <button id="group-leave" class="danger-button" type="button">退出群聊</button>
+          <span id="group-member-status" class="form-status" role="status"></span>
+        </div>
+      </section>
+    </section>
   </main>
 
   <footer id="footer">
@@ -132,6 +178,7 @@
       <span></span>
       <span></span>
       <span></span>
+      <span id="sidebar-unread" class="sidebar-unread" aria-hidden="true" hidden></span>
     </button>
 
     <div id="sidebar-content" hidden>
@@ -140,15 +187,11 @@
         <label for="pin-sidebar">固定侧栏</label>
       </p>
 
-      <h4>会话</h4>
-      <ul id="conversation-list">
-        <li>
-          <button id="group-conversation" class="conversation-entry active" type="button" aria-current="page">
-            <span># 群聊</span>
-            <span id="group-count" class="conversation-count">5</span>
-          </button>
-        </li>
-      </ul>
+      <div class="sidebar-section-heading">
+        <h4>群聊</h4>
+        <button id="group-menu-toggle" class="section-more" type="button" aria-label="群聊更多操作" title="群聊更多操作">⋮</button>
+      </div>
+      <ul id="conversation-list"></ul>
 
       <h4>好友</h4>
       <ul id="friends"></ul>
@@ -158,6 +201,10 @@
       <ul id="users"></ul>
     </div>
   </aside>
+
+  <div id="group-menu" class="context-menu" role="menu" aria-label="群聊操作" hidden>
+    <button id="new-group" type="button" role="menuitem">新建群聊</button>
+  </div>
 
   <div id="friend-menu" class="context-menu" role="menu" aria-label="好友操作" hidden>
     <div class="friend-color-section" role="group" aria-label="消息文字颜色">

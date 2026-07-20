@@ -21,11 +21,14 @@ import (
 )
 
 const (
-	CocoID        = "coco"
-	CocoName      = "coco"
-	MaxNameRunes  = 7
-	MaxMessage    = 2000
-	schemaVersion = 1
+	CocoID          = "coco"
+	CocoName        = "coco"
+	PublicGroupID   = "public"
+	PublicGroupName = "公共大厅"
+	MaxNameRunes    = 7
+	MaxMessage      = 2000
+	MaxGroupName    = 32
+	schemaVersion   = 2
 )
 
 var (
@@ -48,6 +51,7 @@ type Message struct {
 	Text        string     `json:"text"`
 	SentAt      time.Time  `json:"sentAt"`
 	DeliveredAt *time.Time `json:"deliveredAt,omitempty"`
+	GroupID     string     `json:"groupId,omitempty"`
 }
 
 type SelfView struct {
@@ -73,11 +77,35 @@ type MessageView struct {
 	System   bool   `json:"system,omitempty"`
 }
 
+type GroupMemberView struct {
+	Name   string `json:"name"`
+	Online bool   `json:"online"`
+	Owner  bool   `json:"owner,omitempty"`
+}
+
+type GroupView struct {
+	ID             string            `json:"id"`
+	Name           string            `json:"name"`
+	Signature      string            `json:"signature"`
+	Owner          string            `json:"owner"`
+	IsOwner        bool              `json:"isOwner"`
+	System         bool              `json:"system"`
+	HistoryVisible bool              `json:"historyVisible"`
+	Members        []GroupMemberView `json:"members"`
+}
+
+type GroupMutation struct {
+	GroupID    string
+	MemberIDs  []string
+	RemovedIDs []string
+}
+
 type Bootstrap struct {
 	Self          SelfView                 `json:"self"`
 	Members       []MemberView             `json:"members"`
 	Friends       []string                 `json:"friends"`
 	FriendColors  map[string]string        `json:"friendColors"`
+	Groups        []GroupView              `json:"groups"`
 	Conversations map[string][]MessageView `json:"conversations"`
 }
 
@@ -106,6 +134,10 @@ type databaseUser struct {
 	Signature    string
 	Settings     Settings
 	CreatedAt    time.Time
+}
+
+type groupAccess struct {
+	HistoryFrom time.Time
 }
 
 type plaintextBackup struct {
@@ -233,6 +265,25 @@ func (s *Store) initializeSchema() error {
 			PRIMARY KEY (user_id, friend_id),
 			FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 		)`,
+		`CREATE TABLE IF NOT EXISTS groups (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			signature TEXT NOT NULL DEFAULT '',
+			owner_id TEXT,
+			history_visible INTEGER NOT NULL DEFAULT 0,
+			system INTEGER NOT NULL DEFAULT 0,
+			created_at TEXT NOT NULL,
+			FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE SET NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS group_members (
+			group_id TEXT NOT NULL,
+			user_id TEXT NOT NULL,
+			history_from TEXT NOT NULL,
+			PRIMARY KEY (group_id, user_id),
+			FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE,
+			FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+		)`,
+		`CREATE INDEX IF NOT EXISTS group_members_user_idx ON group_members(user_id, group_id)`,
 		`CREATE TABLE IF NOT EXISTS cleared_at (
 			user_id TEXT NOT NULL,
 			conversation_key TEXT NOT NULL,
@@ -245,19 +296,82 @@ func (s *Store) initializeSchema() error {
 			kind TEXT NOT NULL CHECK (kind IN ('group', 'private')),
 			from_id TEXT NOT NULL,
 			to_id TEXT,
+			group_id TEXT,
 			text TEXT NOT NULL,
 			sent_at TEXT NOT NULL,
 			delivered_at TEXT
 		)`,
 		`CREATE INDEX IF NOT EXISTS messages_sent_at_idx ON messages(sent_at, id)`,
 		`CREATE INDEX IF NOT EXISTS messages_recipient_idx ON messages(to_id, delivered_at)`,
-		`INSERT INTO meta(key, value) VALUES ('schema_version', '1')
+		`INSERT INTO meta(key, value) VALUES ('schema_version', '2')
 			ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
 	}
 	for _, statement := range statements {
 		if _, err := s.db.Exec(statement); err != nil {
 			return fmt.Errorf("初始化 SQLite: %w", err)
 		}
+	}
+	return s.migrateGroups()
+}
+
+func (s *Store) migrateGroups() error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	columns, err := tx.Query(`PRAGMA table_info(messages)`)
+	if err != nil {
+		return err
+	}
+	hasGroupID := false
+	for columns.Next() {
+		var cid int
+		var name, columnType string
+		var notNull, primaryKey int
+		var defaultValue sql.NullString
+		if err := columns.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			columns.Close()
+			return err
+		}
+		if name == "group_id" {
+			hasGroupID = true
+		}
+	}
+	if err := columns.Close(); err != nil {
+		return err
+	}
+	if !hasGroupID {
+		if _, err := tx.Exec(`ALTER TABLE messages ADD COLUMN group_id TEXT`); err != nil {
+			return err
+		}
+	}
+	now := time.Now().Format(time.RFC3339Nano)
+	if _, err := tx.Exec(`INSERT OR IGNORE INTO groups(id, name, signature, owner_id, history_visible, system, created_at)
+		VALUES (?, ?, '', NULL, 0, 1, ?)`, PublicGroupID, PublicGroupName, now); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT OR IGNORE INTO group_members(group_id, user_id, history_from)
+		SELECT ?, id, '0001-01-01T00:00:00Z' FROM users`, PublicGroupID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE group_members SET history_from = '0001-01-01T00:00:00Z' WHERE group_id = ?`, PublicGroupID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE messages SET group_id = ? WHERE kind = 'group' AND (group_id IS NULL OR group_id = '')`, PublicGroupID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT INTO cleared_at(user_id, conversation_key, cleared_at)
+		SELECT user_id, ?, cleared_at FROM cleared_at WHERE conversation_key = 'group'
+		ON CONFLICT(user_id, conversation_key) DO UPDATE SET cleared_at = excluded.cleared_at`, GroupConversationKey(PublicGroupID)); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM cleared_at WHERE conversation_key = 'group'`); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
 	}
 	return nil
 }
@@ -319,6 +433,10 @@ func (s *Store) Register(name, password string) (SelfView, error) {
 		return SelfView{}, err
 	}
 	if _, err := tx.Exec(`INSERT INTO friends(user_id, friend_id) VALUES (?, ?)`, user.ID, CocoID); err != nil {
+		return SelfView{}, err
+	}
+	if _, err := tx.Exec(`INSERT OR IGNORE INTO group_members(group_id, user_id, history_from) VALUES (?, ?, ?)`,
+		PublicGroupID, user.ID, "0001-01-01T00:00:00Z"); err != nil {
 		return SelfView{}, err
 	}
 	deliveredAt := now.Format(time.RFC3339Nano)
@@ -383,11 +501,19 @@ func (s *Store) Bootstrap(userID string, online map[string]bool) (Bootstrap, err
 		usersByID[user.ID] = user
 	}
 
+	groups, groupAccess, err := groupsForUserTx(tx, userID, online)
+	if err != nil {
+		return Bootstrap{}, err
+	}
+	conversations := map[string][]MessageView{"dm:coco": {}}
+	for _, group := range groups {
+		conversations[GroupConversationKey(group.ID)] = []MessageView{}
+	}
 	result := Bootstrap{
 		Self:    selfView(viewer),
 		Members: []MemberView{{Name: CocoName, Online: true, Reserved: true, Signature: "仅自己可见"}},
-		Friends: []string{}, FriendColors: map[string]string{},
-		Conversations: map[string][]MessageView{"group": {}, "dm:coco": {}},
+		Friends: []string{}, FriendColors: map[string]string{}, Groups: groups,
+		Conversations: conversations,
 	}
 	otherUsers := make([]*databaseUser, 0, len(users)-1)
 	for _, user := range users {
@@ -438,8 +564,9 @@ func (s *Store) Bootstrap(userID string, online map[string]bool) (Bootstrap, err
 	if err != nil {
 		return Bootstrap{}, err
 	}
-	messageRows, err := tx.Query(`SELECT id, kind, from_id, COALESCE(to_id, ''), text, sent_at, delivered_at
-		FROM messages WHERE kind = 'group' OR from_id = ? OR to_id = ? ORDER BY sent_at, id`, userID, userID)
+	messageRows, err := tx.Query(`SELECT id, kind, from_id, COALESCE(to_id, ''), COALESCE(group_id, ''), text, sent_at, delivered_at
+		FROM messages WHERE (kind = 'group' AND (group_id IN (SELECT group_id FROM group_members WHERE user_id = ?) OR group_id IS NULL))
+		OR from_id = ? OR to_id = ? ORDER BY sent_at, id`, userID, userID, userID)
 	if err != nil {
 		return Bootstrap{}, err
 	}
@@ -449,7 +576,7 @@ func (s *Store) Bootstrap(userID string, online map[string]bool) (Bootstrap, err
 			messageRows.Close()
 			return Bootstrap{}, err
 		}
-		key, visible := visibleConversation(userID, message, clearedAt, usersByID)
+		key, visible := visibleConversation(userID, message, clearedAt, usersByID, groupAccess)
 		if !visible {
 			continue
 		}
@@ -551,6 +678,14 @@ func (s *Store) UpdateSettings(userID string, settings Settings) error {
 }
 
 func (s *Store) SendMessage(fromID, scope, targetName, text string, targetOnline bool) (*Message, string, error) {
+	if scope == "group" {
+		groupID := strings.TrimSpace(targetName)
+		if groupID == "" {
+			groupID = PublicGroupID
+		}
+		message, _, err := s.SendGroupMessage(fromID, groupID, text)
+		return message, "", err
+	}
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return nil, "", errors.New("消息不能为空")
@@ -604,7 +739,7 @@ func (s *Store) SendMessage(fromID, scope, targetName, text string, targetOnline
 			return nil, "", err
 		}
 		friendChanged = true
-	} else if scope != "group" {
+	} else {
 		return nil, "", errors.New("未知消息类型")
 	}
 	var deliveredAt any
@@ -634,19 +769,23 @@ func (s *Store) ClearConversation(userID, targetName string) error {
 	} else if user == nil {
 		return ErrNotFound
 	}
-	key := "group"
-	if targetName != "group" {
-		if strings.EqualFold(targetName, CocoName) {
-			key = "dm:" + CocoID
+	key := GroupConversationKey(PublicGroupID)
+	if targetName != "group" && targetName != key {
+		if strings.HasPrefix(targetName, "group:") {
+			key = targetName
 		} else {
-			target, err := findUserByName(s.db, targetName)
-			if err != nil {
-				return err
+			if strings.EqualFold(targetName, CocoName) {
+				key = "dm:" + CocoID
+			} else {
+				target, err := findUserByName(s.db, targetName)
+				if err != nil {
+					return err
+				}
+				if target == nil {
+					return ErrNotFound
+				}
+				key = "dm:" + target.ID
 			}
-			if target == nil {
-				return ErrNotFound
-			}
-			key = "dm:" + target.ID
 		}
 	}
 	if _, err := s.db.Exec(`INSERT INTO cleared_at(user_id, conversation_key, cleared_at) VALUES (?, ?, ?)
@@ -771,7 +910,11 @@ func (s *Store) MarkDelivered(userID string) ([]DeliveryNotice, error) {
 
 func (s *Store) MessageView(viewerID string, message *Message) MessageView {
 	from := CocoName
-	if message.FromID != CocoID {
+	system := false
+	if message.FromID == "*" {
+		from = "*"
+		system = true
+	} else if message.FromID != CocoID {
 		from = s.NameForID(message.FromID)
 	}
 	delivery := "sent"
@@ -780,7 +923,7 @@ func (s *Store) MessageView(viewerID string, message *Message) MessageView {
 	}
 	return MessageView{
 		ID: message.ID, From: from, Text: message.Text,
-		SentAt: message.SentAt.Format(time.RFC3339Nano), Delivery: delivery,
+		SentAt: message.SentAt.Format(time.RFC3339Nano), Delivery: delivery, System: system,
 	}
 }
 
@@ -1013,7 +1156,7 @@ func scanMessage(scanner rowScanner) (*Message, error) {
 	var message Message
 	var sentAt string
 	var deliveredAt sql.NullString
-	if err := scanner.Scan(&message.ID, &message.Kind, &message.FromID, &message.ToID,
+	if err := scanner.Scan(&message.ID, &message.Kind, &message.FromID, &message.ToID, &message.GroupID,
 		&message.Text, &sentAt, &deliveredAt); err != nil {
 		return nil, err
 	}
@@ -1053,9 +1196,18 @@ func clearedTimes(q queryer, userID string) (map[string]time.Time, error) {
 	return result, rows.Err()
 }
 
-func visibleConversation(userID string, message *Message, clearedAt map[string]time.Time, users map[string]*databaseUser) (string, bool) {
+func visibleConversation(userID string, message *Message, clearedAt map[string]time.Time, users map[string]*databaseUser, groupAccess map[string]groupAccess) (string, bool) {
 	if message.Kind == "group" {
-		return "group", message.SentAt.After(clearedAt["group"])
+		groupID := message.GroupID
+		if groupID == "" {
+			groupID = PublicGroupID
+		}
+		access, member := groupAccess[groupID]
+		if !member || !message.SentAt.After(access.HistoryFrom) {
+			return "", false
+		}
+		key := GroupConversationKey(groupID)
+		return key, message.SentAt.After(clearedAt[key])
 	}
 	if message.FromID != userID && message.ToID != userID {
 		return "", false
@@ -1081,7 +1233,11 @@ func visibleConversation(userID string, message *Message, clearedAt map[string]t
 
 func messageView(viewerID string, message *Message, users map[string]*databaseUser) MessageView {
 	from := CocoName
-	if message.FromID != CocoID {
+	system := false
+	if message.FromID == "*" {
+		from = "*"
+		system = true
+	} else if message.FromID != CocoID {
 		if user := users[message.FromID]; user != nil {
 			from = user.Name
 		}
@@ -1092,7 +1248,7 @@ func messageView(viewerID string, message *Message, users map[string]*databaseUs
 	}
 	return MessageView{
 		ID: message.ID, From: from, Text: message.Text,
-		SentAt: message.SentAt.Format(time.RFC3339Nano), Delivery: delivery,
+		SentAt: message.SentAt.Format(time.RFC3339Nano), Delivery: delivery, System: system,
 	}
 }
 

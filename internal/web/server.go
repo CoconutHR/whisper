@@ -73,6 +73,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/conversations/clear", s.requireAuth(s.handleClearConversation))
 	mux.HandleFunc("/api/friends/delete", s.requireAuth(s.handleDeleteFriend))
 	mux.HandleFunc("/api/friends/color", s.requireAuth(s.handleFriendColor))
+	mux.HandleFunc("/api/groups", s.requireAuth(s.handleGroups))
+	mux.HandleFunc("/api/groups/transfer", s.requireAuth(s.handleGroupTransfer))
+	mux.HandleFunc("/api/groups/leave", s.requireAuth(s.handleGroupLeave))
+	mux.HandleFunc("/api/groups/dissolve", s.requireAuth(s.handleGroupDissolve))
 	mux.HandleFunc("/ws", s.requireAuth(s.handleWebSocket))
 	mux.HandleFunc("/", s.handleStatic)
 	return s.securityHeaders(mux)
@@ -318,10 +322,21 @@ func (s *Server) readPump(client *socketClient) {
 		if command.Type != "message" {
 			continue
 		}
+		if command.Scope == "group" {
+			groupID := command.To
+			if groupID == "" {
+				groupID = chat.PublicGroupID
+			}
+			message, memberIDs, err := s.store.SendGroupMessage(client.userID, groupID, command.Text)
+			if err != nil {
+				s.hub.sendTo(client.userID, map[string]any{"type": "error", "message": err.Error()})
+				continue
+			}
+			s.dispatchGroupMessage(groupID, memberIDs, message)
+			continue
+		}
 		targetID := s.store.IDForName(command.To)
-		message, targetID, err := s.store.SendMessage(
-			client.userID, command.Scope, command.To, command.Text, s.hub.isOnline(targetID),
-		)
+		message, targetID, err := s.store.SendMessage(client.userID, command.Scope, command.To, command.Text, s.hub.isOnline(targetID))
 		if err != nil {
 			s.hub.sendTo(client.userID, map[string]any{"type": "error", "message": err.Error()})
 			continue
@@ -354,13 +369,6 @@ func (s *Server) writePump(client *socketClient) {
 }
 
 func (s *Server) dispatchMessage(senderID, targetID, targetName string, message *chat.Message) {
-	if message.Kind == "group" {
-		s.hub.broadcast(map[string]any{
-			"type": "message", "conversation": "group", "message": s.store.MessageView(senderID, message),
-		})
-		return
-	}
-
 	s.hub.sendTo(senderID, map[string]any{
 		"type": "message", "conversation": "dm:" + targetName,
 		"friend": targetName, "message": s.store.MessageView(senderID, message),
@@ -373,6 +381,15 @@ func (s *Server) dispatchMessage(senderID, targetID, targetName string, message 
 		"type": "message", "conversation": "dm:" + senderName,
 		"friend": senderName, "message": s.store.MessageView(targetID, message),
 	})
+}
+
+func (s *Server) dispatchGroupMessage(groupID string, memberIDs []string, message *chat.Message) {
+	for _, memberID := range memberIDs {
+		s.hub.sendTo(memberID, map[string]any{
+			"type": "message", "conversation": chat.GroupConversationKey(groupID),
+			"message": s.store.MessageView(memberID, message),
+		})
+	}
 }
 
 func (s *Server) deliverPending(userID string) {

@@ -2,10 +2,20 @@ package chat
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
 
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
@@ -69,6 +79,13 @@ func TestPrivateDeliveryAndCocoIsolation(t *testing.T) {
 	if targetID != bob.ID || message.DeliveredAt != nil {
 		t.Fatalf("unexpected queued message: target=%q delivered=%v", targetID, message.DeliveredAt)
 	}
+	bobView, err := store.Bootstrap(bob.ID, map[string]bool{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsString(bobView.Friends, "alice") {
+		t.Fatalf("sender was not added to receiver friends: %#v", bobView.Friends)
+	}
 
 	aliceView, err := store.Bootstrap(alice.ID, map[string]bool{})
 	if err != nil {
@@ -89,7 +106,7 @@ func TestPrivateDeliveryAndCocoIsolation(t *testing.T) {
 	if _, _, err := store.SendMessage(alice.ID, "private", CocoName, "仅自己可见", true); err != nil {
 		t.Fatal(err)
 	}
-	bobView, err := store.Bootstrap(bob.ID, map[string]bool{})
+	bobView, err = store.Bootstrap(bob.ID, map[string]bool{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,6 +114,87 @@ func TestPrivateDeliveryAndCocoIsolation(t *testing.T) {
 		if item.Text == "仅自己可见" {
 			t.Fatal("bob can see alice's coco message")
 		}
+	}
+}
+
+func TestGroupLifecycleAndHistoryVisibility(t *testing.T) {
+	store := newTestStore(t)
+	alice, err := store.Register("alice", "password123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bob, err := store.Register("bob", "password123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	carol, err := store.Register("carol", "password123")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mutation, group, err := store.CreateGroup(alice.ID, "项目组", "一起推进", false, []string{"bob"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !group.IsOwner || group.System || mutation.GroupID == PublicGroupID {
+		t.Fatalf("unexpected created group: %#v", group)
+	}
+	if _, _, err := store.CreateGroup(alice.ID, PublicGroupName, "", false, []string{"bob"}); !errors.Is(err, ErrGroupNameReserved) {
+		t.Fatalf("reserved group name error = %v", err)
+	}
+
+	oldMessage, _, err := store.SendGroupMessage(alice.ID, mutation.GroupID, "加入前的消息")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if oldMessage.GroupID != mutation.GroupID {
+		t.Fatalf("message group id = %q", oldMessage.GroupID)
+	}
+	_, _, err = store.UpdateGroup(alice.ID, mutation.GroupID, "项目组", "一起推进", false, []string{"bob", "carol"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	carolView, err := store.Bootstrap(carol.ID, map[string]bool{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(carolView.Conversations[GroupConversationKey(mutation.GroupID)]); got != 0 {
+		t.Fatalf("history should be hidden for new member, got %d messages", got)
+	}
+	if _, _, err := store.UpdateGroup(alice.ID, mutation.GroupID, "项目组", "一起推进", false, []string{"bob"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.UpdateGroup(alice.ID, mutation.GroupID, "项目组", "一起推进", true, []string{"bob", "carol"}); err != nil {
+		t.Fatal(err)
+	}
+	carolView, err = store.Bootstrap(carol.ID, map[string]bool{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(carolView.Conversations[GroupConversationKey(mutation.GroupID)]); got == 0 {
+		t.Fatal("history-visible setting did not grant history to a new member")
+	}
+	if _, _, err := store.SendGroupMessage(alice.ID, mutation.GroupID, "加入后的消息"); err != nil {
+		t.Fatal(err)
+	}
+	carolView, err = store.Bootstrap(carol.ID, map[string]bool{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(carolView.Conversations[GroupConversationKey(mutation.GroupID)]); got == 0 {
+		t.Fatal("new member cannot see messages sent after joining")
+	}
+	if _, _, err := store.UpdateGroup(bob.ID, mutation.GroupID, "越权修改", "", false, []string{"alice"}); !errors.Is(err, ErrGroupForbidden) {
+		t.Fatalf("non-owner update error = %v", err)
+	}
+	if _, err := store.LeaveGroup(alice.ID, mutation.GroupID); err == nil {
+		t.Fatal("group owner should not leave without transferring ownership")
+	}
+	if _, err := store.DissolveGroup(alice.ID, mutation.GroupID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Bootstrap(carol.ID, map[string]bool{}); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -207,8 +305,8 @@ func TestSQLitePersistsAcrossRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(view.Conversations["group"]) != 1 || view.Conversations["group"][0].Text != "persisted" {
-		t.Fatalf("messages after restart = %#v", view.Conversations["group"])
+	if len(view.Conversations[GroupConversationKey(PublicGroupID)]) != 1 || view.Conversations[GroupConversationKey(PublicGroupID)][0].Text != "persisted" {
+		t.Fatalf("messages after restart = %#v", view.Conversations[GroupConversationKey(PublicGroupID)])
 	}
 }
 

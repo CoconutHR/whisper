@@ -1,5 +1,8 @@
 const MAX_NICKNAME_LENGTH = 7;
 const RESERVED_NICKNAME = "coco";
+const PUBLIC_GROUP_ID = "public";
+const PUBLIC_GROUP_NAME = "公共大厅";
+const PUBLIC_GROUP_CONVERSATION = `group:${PUBLIC_GROUP_ID}`;
 const HTTP_PROTOCOLS = new Set(["http:", "https:"]);
 const FRIEND_MESSAGE_COLORS = new Set(["default", "green", "blue", "cyan", "amber", "rose"]);
 const STORAGE_KEY_MIGRATIONS = [
@@ -86,16 +89,35 @@ function loadStoredFriendColors() {
 
 const state = {
   currentUser: initialProfileName,
-  currentConversation: "group",
+  currentConversation: PUBLIC_GROUP_CONVERSATION,
   friendMenuMember: null,
+  groupMenuOpen: false,
+  editingGroupId: null,
   friends: new Set([RESERVED_NICKNAME]),
   friendColors: loadStoredFriendColors(),
+  unreadCounts: new Map(),
+  nudgingConversations: new Set(),
+  groups: new Map([
+    [PUBLIC_GROUP_ID, {
+      id: PUBLIC_GROUP_ID,
+      name: PUBLIC_GROUP_NAME,
+      signature: "所有成员都可以在这里聊天。",
+      owner: "",
+      isOwner: false,
+      system: true,
+      historyVisible: true,
+      members: [
+        { name: initialProfileName, online: true, owner: false },
+        ...members.map((member) => ({ name: member.name, online: member.online, owner: false }))
+      ]
+    }]
+  ]),
   profile: {
     signature: initialSignature,
     password: ""
   },
   conversations: {
-    group: [
+    [PUBLIC_GROUP_CONVERSATION]: [
       { from: "*", text: "已连接，4 人在线。", sentAt: seedTimestamp(0, 15, 54, 1, 120), system: true },
       { from: "小林", text: "下午四点开始？", sentAt: seedTimestamp(1, 15, 56, 12, 345) },
       { from: initialProfileName, text: "可以，群里确认一下。", sentAt: seedTimestamp(2, 15, 57, 23, 456) },
@@ -116,6 +138,8 @@ const state = {
   }
 };
 
+const nudgeTimers = new Map();
+
 function persistDemoFriendColors() {
   localStorage.setItem(
     "whisper-friend-colors",
@@ -134,23 +158,27 @@ const authSubmitEl = document.querySelector("#auth-submit");
 const authLoginModeEl = document.querySelector("#auth-login-mode");
 const authRegisterModeEl = document.querySelector("#auth-register-mode");
 const profilePanelEl = document.querySelector("#profile-panel");
+const groupPanelEl = document.querySelector("#group-panel");
 const footerEl = document.querySelector("#footer");
 const conversationTitleEl = document.querySelector("#conversation-title");
 const conversationStatusEl = document.querySelector("#conversation-status");
 const profileSignatureEl = document.querySelector("#profile-signature");
 const backToGroupEl = document.querySelector("#back-to-group");
-const groupConversationEl = document.querySelector("#group-conversation");
-const groupCountEl = document.querySelector("#group-count");
+const conversationListEl = document.querySelector("#conversation-list");
 const formEl = document.querySelector("#chatform");
 const inputEl = document.querySelector("#chatinput");
 const sidebarEl = document.querySelector("#sidebar");
 const sidebarContentEl = document.querySelector("#sidebar-content");
 const sidebarToggleEl = document.querySelector("#sidebar-toggle");
+const sidebarUnreadEl = document.querySelector("#sidebar-unread");
 const pinSidebarEl = document.querySelector("#pin-sidebar");
 const friendsEl = document.querySelector("#friends");
 const friendsEmptyEl = document.querySelector("#friends-empty");
 const usersEl = document.querySelector("#users");
 const friendMenuEl = document.querySelector("#friend-menu");
+const groupMenuEl = document.querySelector("#group-menu");
+const groupMenuToggleEl = document.querySelector("#group-menu-toggle");
+const newGroupEl = document.querySelector("#new-group");
 const friendColorButtons = document.querySelectorAll("[data-friend-color]");
 const friendColorStatusEl = document.querySelector("#friend-color-status");
 const clearFriendMessagesEl = document.querySelector("#clear-friend-messages");
@@ -170,9 +198,70 @@ const parseLatexEl = document.querySelector("#parse-latex");
 const clearMessagesEl = document.querySelector("#clear-messages");
 const schemeSelectorEl = document.querySelector("#scheme-selector");
 const logoutEl = document.querySelector("#logout");
+const conversationTitleButtonEl = document.querySelector("#conversation-title");
+const groupFormEl = document.querySelector("#group-form");
+const groupPanelTitleEl = document.querySelector("#group-panel-title");
+const groupNameInputEl = document.querySelector("#group-name-input");
+const groupSignatureInputEl = document.querySelector("#group-signature-input");
+const groupHistoryVisibleEl = document.querySelector("#group-history-visible");
+const groupHistoryFieldEl = document.querySelector("#group-history-field");
+const groupMembersFieldEl = document.querySelector("#group-members-field");
+const groupMemberOptionsEl = document.querySelector("#group-member-options");
+const groupSaveEl = document.querySelector("#group-save");
+const groupSaveStatusEl = document.querySelector("#group-save-status");
+const groupOwnerActionsEl = document.querySelector("#group-owner-actions");
+const groupTransferOwnerEl = document.querySelector("#group-transfer-owner");
+const groupTransferEl = document.querySelector("#group-transfer");
+const groupDissolveEl = document.querySelector("#group-dissolve");
+const groupOwnerStatusEl = document.querySelector("#group-owner-status");
+const groupMemberActionsEl = document.querySelector("#group-member-actions");
+const groupLeaveEl = document.querySelector("#group-leave");
+const groupMemberStatusEl = document.querySelector("#group-member-status");
 
 function conversationIdFor(name) {
   return `dm:${name}`;
+}
+
+function friendNameForConversation(conversationId) {
+  return conversationId.startsWith("dm:") ? conversationId.slice(3) : "";
+}
+
+function groupConversationIdFor(id) {
+  return `group:${id}`;
+}
+
+function groupIdForConversation(conversationId = state.currentConversation) {
+  return conversationId.startsWith("group:") ? conversationId.slice(6) : "";
+}
+
+function isGroupConversation(conversationId = state.currentConversation) {
+  return conversationId.startsWith("group:");
+}
+
+function isGroupSettingsConversation(conversationId = state.currentConversation) {
+  return conversationId.startsWith("group-settings:");
+}
+
+function groupSettingsIdFor(groupId) {
+  return `group-settings:${groupId}`;
+}
+
+function isGroupCreateConversation(conversationId = state.currentConversation) {
+  return conversationId === "group-create";
+}
+
+function groupIdFromSettings(conversationId = state.currentConversation) {
+  return conversationId.startsWith("group-settings:") ? conversationId.slice(15) : "";
+}
+
+function groupById(groupId) {
+  return state.groups.get(groupId) || null;
+}
+
+function currentGroup() {
+  if (isGroupConversation()) return groupById(groupIdForConversation());
+  if (isGroupSettingsConversation()) return groupById(groupIdFromSettings());
+  return null;
 }
 
 function memberByName(name) {
@@ -188,7 +277,8 @@ function sortedMembers(memberList) {
 }
 
 function currentMember() {
-  if (state.currentConversation === "group" || state.currentConversation === "self") {
+  if (isGroupConversation() || isGroupSettingsConversation()
+    || isGroupCreateConversation() || state.currentConversation === "self") {
     return null;
   }
   return memberByName(state.currentConversation.slice(3));
@@ -196,6 +286,49 @@ function currentMember() {
 
 function currentMessages() {
   return state.conversations[state.currentConversation] || [];
+}
+
+function unreadCountFor(conversationId) {
+  return state.unreadCounts.get(conversationId) || 0;
+}
+
+function totalUnreadCount() {
+  return Array.from(state.unreadCounts.values()).reduce((total, count) => total + count, 0);
+}
+
+function displayUnreadCount(count) {
+  return count > 99 ? "99+" : String(count);
+}
+
+function stopConversationNudge(conversationId) {
+  state.nudgingConversations.delete(conversationId);
+  const timer = nudgeTimers.get(conversationId);
+  if (timer !== undefined) window.clearTimeout(timer);
+  nudgeTimers.delete(conversationId);
+}
+
+function clearConversationUnread(conversationId) {
+  state.unreadCounts.delete(conversationId);
+  stopConversationNudge(conversationId);
+}
+
+function resetUnreadState() {
+  nudgeTimers.forEach((timer) => window.clearTimeout(timer));
+  nudgeTimers.clear();
+  state.unreadCounts.clear();
+  state.nudgingConversations.clear();
+}
+
+function markConversationUnread(conversationId) {
+  const previousCount = unreadCountFor(conversationId);
+  state.unreadCounts.set(conversationId, previousCount + 1);
+  stopConversationNudge(conversationId);
+  state.nudgingConversations.add(conversationId);
+  nudgeTimers.set(conversationId, window.setTimeout(() => {
+    state.nudgingConversations.delete(conversationId);
+    nudgeTimers.delete(conversationId);
+    renderFriends();
+  }, 700));
 }
 
 function pad(value, length = 2) {
@@ -302,18 +435,24 @@ function appendFormattedText(container, value) {
 }
 
 function switchConversation(conversationId) {
-  if (conversationId !== "self" && !state.conversations[conversationId]) return;
+  const groupSettingsId = groupIdFromSettings(conversationId);
+  const allowedPanel = conversationId === "self" || conversationId === "group-create"
+    || (groupSettingsId && state.groups.has(groupSettingsId));
+  if (!allowedPanel && !state.conversations[conversationId]) return;
 
+  clearConversationUnread(conversationId);
   state.currentConversation = conversationId;
   inputEl.value = "";
   resizeInput();
   hideFriendMenu();
+  hideGroupMenu();
   renderConversation();
 
   if (!pinSidebarEl.checked) setSidebar(false);
-  if (conversationId === "self") {
+  if (conversationId === "self" || conversationId === "group-create" || groupSettingsId) {
     window.scrollTo({ top: 0 });
-    profileNameEl.focus();
+    if (conversationId === "self") profileNameEl.focus();
+    else groupNameInputEl.focus();
   } else {
     inputEl.focus();
     window.scrollTo({ top: document.body.scrollHeight });
@@ -321,7 +460,7 @@ function switchConversation(conversationId) {
 }
 
 function mentionInGroup(name) {
-  if (state.currentConversation !== "group") return;
+  if (!isGroupConversation()) return;
   inputEl.value = `@${name} `;
   resizeInput();
   inputEl.focus();
@@ -329,30 +468,53 @@ function mentionInGroup(name) {
 }
 
 function renderConversationHeader() {
-  const onlineCount = members.filter((member) => member.online).length + 1;
-
   if (state.currentConversation === "self") {
     document.body.dataset.conversationKind = "profile";
     conversationTitleEl.textContent = `@ ${state.currentUser}`;
+    conversationTitleEl.disabled = true;
     setConversationMeta("在线", state.profile.signature);
     backToGroupEl.hidden = false;
     return;
   }
 
-  const member = currentMember();
-  if (!member) {
-    document.body.dataset.conversationKind = "group";
-    conversationTitleEl.textContent = "# 群聊";
-    setConversationMeta(`${onlineCount} 人在线`);
-    inputEl.placeholder = "发送到群聊...";
-    backToGroupEl.hidden = true;
+  if (isGroupCreateConversation()) {
+    document.body.dataset.conversationKind = "profile";
+    conversationTitleEl.textContent = "新建群聊";
+    conversationTitleEl.disabled = true;
+    setConversationMeta("选择成员并设置群聊资料");
+    backToGroupEl.hidden = false;
     return;
   }
 
+  if (isGroupSettingsConversation()) {
+    const group = currentGroup();
+    document.body.dataset.conversationKind = "profile";
+    conversationTitleEl.textContent = group ? `# ${group.name}` : "群聊信息";
+    conversationTitleEl.disabled = true;
+    setConversationMeta(group?.system ? "公共大厅" : group?.isOwner ? "群主配置" : "群聊信息", group?.signature || "");
+    backToGroupEl.hidden = false;
+    return;
+  }
+
+  const group = currentGroup();
+  if (group) {
+    const onlineCount = group.members.filter((item) => item.online || item.name === state.currentUser).length;
+    document.body.dataset.conversationKind = "group";
+    conversationTitleEl.textContent = `# ${group.name}`;
+    conversationTitleEl.disabled = false;
+    conversationTitleEl.setAttribute("aria-label", `查看${group.name}群聊信息`);
+    setConversationMeta(`${onlineCount}/${group.members.length} 人在线`, group.signature || "");
+    inputEl.placeholder = `发送到${group.name}...`;
+    backToGroupEl.hidden = group.id === PUBLIC_GROUP_ID;
+    return;
+  }
+
+  const member = currentMember();
   document.body.dataset.conversationKind = "private";
-  conversationTitleEl.textContent = `@ ${member.name}`;
-  setConversationMeta(member.online ? "在线" : "离线，可留言", member.signature || "");
-  inputEl.placeholder = member.online
+  conversationTitleEl.textContent = member ? `@ ${member.name}` : "会话";
+  conversationTitleEl.disabled = true;
+  setConversationMeta(member?.online ? "在线" : "离线，可留言", member?.signature || "");
+  inputEl.placeholder = member?.online
     ? `发送给${member.name}...`
     : `给${member.name}留言...`;
   backToGroupEl.hidden = false;
@@ -429,7 +591,7 @@ function renderMessages() {
   conversationMessages.forEach((message) => {
     const canMention = !message.system
       && message.from !== state.currentUser
-      && state.currentConversation === "group";
+      && isGroupConversation();
     const row = document.createElement("div");
     row.className = "message";
 
@@ -467,8 +629,10 @@ function renderFriends() {
 
   friendMembers.forEach((member) => {
     const conversationId = conversationIdFor(member.name);
+    const unreadCount = unreadCountFor(conversationId);
     const item = document.createElement("li");
     item.className = "friend-row";
+    item.classList.toggle("unread", unreadCount > 0);
     item.classList.toggle("offline", !member.online);
     item.classList.toggle("active", state.currentConversation === conversationId);
     item.classList.toggle("reserved", Boolean(member.reserved));
@@ -476,8 +640,24 @@ function renderFriends() {
     const nameButton = document.createElement("button");
     nameButton.type = "button";
     nameButton.className = "friend-name";
-    nameButton.textContent = member.reserved ? `@${member.name}` : member.name;
-    nameButton.setAttribute("aria-label", `与${member.name}私聊（好友）`);
+    const nameLabel = document.createElement("span");
+    nameLabel.className = "friend-name-label";
+    nameLabel.classList.toggle("nudging", state.nudgingConversations.has(conversationId));
+    nameLabel.textContent = member.reserved ? `@${member.name}` : member.name;
+    nameButton.append(nameLabel);
+    if (unreadCount > 0) {
+      const unread = document.createElement("span");
+      unread.className = "friend-unread";
+      unread.textContent = displayUnreadCount(unreadCount);
+      unread.setAttribute("aria-hidden", "true");
+      nameButton.append(unread);
+    }
+    nameButton.setAttribute(
+      "aria-label",
+      unreadCount > 0
+        ? `与${member.name}私聊，${unreadCount}条未读消息`
+        : `与${member.name}私聊（好友）`
+    );
     nameButton.title = member.online ? `与${member.name}私聊` : `给${member.name}留言`;
     nameButton.addEventListener("click", () => switchConversation(conversationId));
 
@@ -544,32 +724,133 @@ function renderUsers() {
   });
 }
 
+function renderGroups() {
+  conversationListEl.replaceChildren();
+  const groups = [...state.groups.values()].sort((left, right) => {
+    if (left.system !== right.system) return left.system ? -1 : 1;
+    return left.name.localeCompare(right.name, "zh-CN");
+  });
+  groups.forEach((group) => {
+    const conversationId = groupConversationIdFor(group.id);
+    const unreadCount = unreadCountFor(conversationId);
+    const onlineCount = group.members.filter((member) => member.online || member.name === state.currentUser).length;
+    const item = document.createElement("li");
+    item.className = "conversation-row";
+    item.classList.toggle("unread", unreadCount > 0);
+
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "conversation-entry";
+    button.classList.toggle("active", state.currentConversation === conversationId);
+    button.setAttribute("aria-current", state.currentConversation === conversationId ? "page" : "false");
+    button.setAttribute(
+      "aria-label",
+      unreadCount > 0 ? `打开群聊${group.name}，${unreadCount}条未读消息` : `打开群聊${group.name}`
+    );
+    const label = document.createElement("span");
+    label.textContent = `# ${group.name}`;
+    label.className = "conversation-label";
+    label.classList.toggle("nudging", state.nudgingConversations.has(conversationId));
+    const count = document.createElement("span");
+    count.className = "conversation-count";
+    count.textContent = unreadCount > 0 ? displayUnreadCount(unreadCount) : String(onlineCount);
+    button.append(label, count);
+    button.addEventListener("click", () => switchConversation(conversationId));
+    item.append(button);
+    conversationListEl.append(item);
+  });
+}
+
+function renderGroupMemberOptions(group, editable) {
+  groupMemberOptionsEl.replaceChildren();
+  const selectedNames = new Set(group?.members?.map((member) => member.name) || []);
+  const availableMembers = [
+    { name: state.currentUser, online: true, self: true },
+    ...sortedMembers(members.filter((member) => !member.reserved))
+  ];
+  availableMembers.forEach((member) => {
+    const row = document.createElement("label");
+    row.className = "group-member-option";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.value = member.name;
+    checkbox.checked = isGroupCreateConversation()
+      ? Boolean(member.self)
+      : selectedNames.has(member.name);
+    checkbox.disabled = member.self || !editable;
+    const text = document.createElement("span");
+    text.textContent = member.self ? `${member.name}（本人）` : member.name;
+    row.append(checkbox, text);
+    groupMemberOptionsEl.append(row);
+  });
+}
+
+function renderGroupPanel() {
+  const createMode = isGroupCreateConversation();
+  const group = currentGroup();
+  const editable = createMode || Boolean(group?.isOwner && !group.system);
+  const readOnlyGroup = !createMode && Boolean(group);
+  groupPanelTitleEl.textContent = createMode ? "新建群聊" : group ? `${group.name} 群聊信息` : "群聊信息";
+  groupNameInputEl.value = createMode ? "" : group?.name || "";
+  groupSignatureInputEl.value = createMode ? "" : group?.signature || "";
+  groupHistoryVisibleEl.checked = createMode ? false : Boolean(group?.historyVisible);
+  groupNameInputEl.disabled = !editable;
+  groupSignatureInputEl.disabled = !editable;
+  groupHistoryVisibleEl.disabled = !editable;
+  groupHistoryFieldEl.hidden = !createMode && Boolean(group?.system);
+  groupMembersFieldEl.hidden = !createMode && !group;
+  groupSaveEl.textContent = createMode ? "创建群聊" : "保存群聊配置";
+  groupSaveEl.disabled = !editable;
+  document.querySelector("#group-save-actions").hidden = !editable;
+  if (!groupMembersFieldEl.hidden) renderGroupMemberOptions(group, editable);
+
+  const ownerEditable = readOnlyGroup && group.isOwner && !group.system;
+  groupOwnerActionsEl.hidden = !ownerEditable;
+  groupMemberActionsEl.hidden = !readOnlyGroup || Boolean(group.isOwner) || Boolean(group.system);
+  groupTransferOwnerEl.replaceChildren();
+  if (ownerEditable) {
+    group.members.filter((member) => !member.owner).forEach((member) => {
+      const option = document.createElement("option");
+      option.value = member.name;
+      option.textContent = member.name;
+      groupTransferOwnerEl.append(option);
+    });
+    groupTransferOwnerEl.disabled = groupTransferOwnerEl.options.length === 0;
+  }
+  groupSaveStatusEl.textContent = "";
+  groupOwnerStatusEl.textContent = "";
+  groupMemberStatusEl.textContent = "";
+}
+
 function renderConversationNavigation() {
-  const groupActive = state.currentConversation === "group";
-  groupConversationEl.classList.toggle("active", groupActive);
-  groupConversationEl.setAttribute("aria-current", groupActive ? "page" : "false");
-  groupCountEl.textContent = String(members.filter((member) => member.online).length + 1);
+  renderGroups();
   renderFriends();
   renderUsers();
+  updateSidebarUnreadIndicator();
 }
 
 function renderConversation() {
   const profileMode = state.currentConversation === "self";
-  messagesEl.hidden = profileMode;
+  const groupPanelMode = isGroupCreateConversation() || isGroupSettingsConversation();
+  const settingsMode = profileMode || groupPanelMode;
+  messagesEl.hidden = settingsMode;
   profilePanelEl.hidden = !profileMode;
-  footerEl.hidden = profileMode;
+  groupPanelEl.hidden = !groupPanelMode;
+  footerEl.hidden = settingsMode;
   renderConversationHeader();
   if (profileMode) renderProfilePanel();
+  else if (groupPanelMode) renderGroupPanel();
   else renderMessages();
   renderConversationNavigation();
 }
 
 function sendCurrentMessage() {
-  if (state.currentConversation === "self") return;
+  if (state.currentConversation === "self" || isGroupCreateConversation() || isGroupSettingsConversation()) return;
   const text = inputEl.value.trim();
   if (!text) return;
 
   const member = currentMember();
+  const group = currentGroup();
   if (backendEnabled) {
     if (!socket || socket.readyState !== WebSocket.OPEN) {
       inputEl.placeholder = "正在重新连接...";
@@ -578,7 +859,7 @@ function sendCurrentMessage() {
     socket.send(JSON.stringify({
       type: "message",
       scope: member ? "private" : "group",
-      to: member?.name || "",
+      to: member?.name || group?.id || PUBLIC_GROUP_ID,
       text
     }));
     inputEl.value = "";
@@ -610,8 +891,20 @@ function setSidebar(open) {
   sidebarEl.classList.toggle("open", open);
   sidebarContentEl.hidden = !open;
   sidebarToggleEl.setAttribute("aria-expanded", String(open));
-  sidebarToggleEl.setAttribute("aria-label", open ? "关闭会话列表" : "打开会话列表");
+  updateSidebarUnreadIndicator();
   if (!open) hideFriendMenu();
+}
+
+function updateSidebarUnreadIndicator() {
+  const unreadCount = totalUnreadCount();
+  const open = sidebarEl.classList.contains("open");
+  sidebarUnreadEl.hidden = open || unreadCount === 0;
+  sidebarUnreadEl.textContent = unreadCount > 0 ? displayUnreadCount(unreadCount) : "";
+  const action = open ? "关闭会话列表" : "打开会话列表";
+  sidebarToggleEl.setAttribute(
+    "aria-label",
+    unreadCount > 0 ? `${action}，${unreadCount}条未读消息` : action
+  );
 }
 
 function updateFriendColorMenu(name) {
@@ -649,6 +942,11 @@ function hideFriendMenu() {
   setFormStatus(friendColorStatusEl, "");
 }
 
+function hideGroupMenu() {
+  groupMenuEl.hidden = true;
+  state.groupMenuOpen = false;
+}
+
 function setFormStatus(element, message, error = false) {
   element.textContent = message;
   element.classList.toggle("error", error);
@@ -660,6 +958,12 @@ function updateOwnMessageNames(previousName, nextName) {
       if (message.from === previousName) message.from = nextName;
     });
   });
+  state.groups.forEach((group) => {
+    group.members.forEach((member) => {
+      if (member.name === previousName) member.name = nextName;
+    });
+    if (group.owner === previousName) group.owner = nextName;
+  });
 }
 
 function updateMemberPresence(name, online) {
@@ -667,6 +971,10 @@ function updateMemberPresence(name, online) {
   if (!member || member.reserved) return;
 
   member.online = online;
+  state.groups.forEach((group) => {
+    const groupMember = group.members.find((item) => item.name === name);
+    if (groupMember) groupMember.online = online;
+  });
   if (online) {
     state.conversations[conversationIdFor(name)].forEach((message) => {
       if (message.delivery === "queued") message.delivery = "sent";
@@ -686,8 +994,12 @@ function receivePrivateMessage(from, text) {
     delivery: "sent"
   });
   state.friends.add(from);
+  const conversationId = conversationIdFor(from);
+  if (state.currentConversation !== conversationId || document.hidden) {
+    markConversationUnread(conversationId);
+  }
   renderConversationNavigation();
-  if (state.currentConversation === conversationIdFor(from)) renderMessages();
+  if (state.currentConversation === conversationId) renderMessages();
 }
 
 class ApiError extends Error {
@@ -729,6 +1041,7 @@ function closeSocket() {
 function showAuthUI(message = "") {
   backendAuthenticated = false;
   closeSocket();
+  resetUnreadState();
   authPanelEl.hidden = false;
   appMainEl.hidden = true;
   footerEl.hidden = true;
@@ -759,21 +1072,50 @@ function setAuthMode(mode) {
   setFormStatus(authStatusEl, "");
 }
 
+function applyGroupView(group) {
+  if (!group?.id) return;
+  state.groups.set(group.id, group);
+  const conversationId = groupConversationIdFor(group.id);
+  if (!state.conversations[conversationId]) state.conversations[conversationId] = [];
+}
+
+function removeGroup(groupId) {
+  state.groups.delete(groupId);
+  delete state.conversations[groupConversationIdFor(groupId)];
+  clearConversationUnread(groupConversationIdFor(groupId));
+  if (state.currentConversation === groupConversationIdFor(groupId)
+    || state.currentConversation === groupSettingsIdFor(groupId)) {
+    state.currentConversation = PUBLIC_GROUP_CONVERSATION;
+  }
+}
+
 function hydrateBootstrap(payload) {
   state.currentUser = payload.self.name;
   state.profile.signature = payload.self.signature || "";
-  state.currentConversation = "group";
+  state.currentConversation = PUBLIC_GROUP_CONVERSATION;
   state.friendMenuMember = null;
   state.friends = new Set(payload.friends || []);
   state.friendColors = new Map(Object.entries(payload.friendColors || {}));
-  state.conversations = payload.conversations || { group: [], "dm:coco": [] };
+  state.conversations = payload.conversations || { [PUBLIC_GROUP_CONVERSATION]: [], "dm:coco": [] };
+  if (state.conversations.group && !state.conversations[PUBLIC_GROUP_CONVERSATION]) {
+    state.conversations[PUBLIC_GROUP_CONVERSATION] = state.conversations.group;
+    delete state.conversations.group;
+  }
+  state.groups = new Map();
+  (payload.groups || []).forEach((group) => applyGroupView(group));
+  if (!state.groups.has(PUBLIC_GROUP_ID)) {
+    applyGroupView({
+      id: PUBLIC_GROUP_ID, name: PUBLIC_GROUP_NAME, signature: "", owner: "",
+      isOwner: false, system: true, historyVisible: true, members: []
+    });
+  }
 
   members.splice(0, members.length, ...(payload.members || []));
   members.forEach((member) => {
     const key = conversationIdFor(member.name);
     if (!state.conversations[key]) state.conversations[key] = [];
   });
-  if (!state.conversations.group) state.conversations.group = [];
+  if (!state.conversations[PUBLIC_GROUP_CONVERSATION]) state.conversations[PUBLIC_GROUP_CONVERSATION] = [];
 
   showMessageTimeEl.checked = payload.self.settings.showMessageTime;
   parseLatexEl.checked = payload.self.settings.parseLatex;
@@ -791,6 +1133,15 @@ function renameRemoteMember(previousName, memberView) {
   member.name = memberView.name;
   member.online = memberView.online;
   member.signature = memberView.signature || "";
+  state.groups.forEach((group) => {
+    group.members.forEach((groupMember) => {
+      if (groupMember.name === previousName) {
+        groupMember.name = memberView.name;
+        groupMember.online = memberView.online;
+      }
+    });
+    if (group.owner === previousName) group.owner = memberView.name;
+  });
   if (previousKey !== nextKey) {
     state.conversations[nextKey] = state.conversations[previousKey] || [];
     delete state.conversations[previousKey];
@@ -799,6 +1150,11 @@ function renameRemoteMember(previousName, memberView) {
       state.friendColors.set(memberView.name, state.friendColors.get(previousName));
       state.friendColors.delete(previousName);
     }
+    if (state.unreadCounts.has(previousKey)) {
+      state.unreadCounts.set(nextKey, state.unreadCounts.get(previousKey));
+      state.unreadCounts.delete(previousKey);
+    }
+    stopConversationNudge(previousKey);
     if (state.currentConversation === previousKey) state.currentConversation = nextKey;
     Object.values(state.conversations).forEach((messages) => {
       messages.forEach((message) => {
@@ -812,8 +1168,23 @@ function handleSocketEvent(event) {
   if (event.type === "message") {
     if (!state.conversations[event.conversation]) state.conversations[event.conversation] = [];
     const messages = state.conversations[event.conversation];
-    if (!messages.some((message) => message.id === event.message.id)) messages.push(event.message);
+    const isNewMessage = !messages.some((message) => message.id === event.message.id);
+    if (isNewMessage) messages.push(event.message);
+    const conversationFriend = friendNameForConversation(event.conversation);
+    const isIncomingPrivateMessage = event.conversation.startsWith("dm:")
+      && event.message.from !== state.currentUser;
+    const isIncomingGroupMessage = isGroupConversation(event.conversation)
+      && event.message.from !== state.currentUser;
     if (event.friend) state.friends.add(event.friend);
+    if (isIncomingPrivateMessage) state.friends.add(event.friend || conversationFriend);
+    if (isNewMessage && isIncomingPrivateMessage
+      && (state.currentConversation !== event.conversation || document.hidden)) {
+      markConversationUnread(event.conversation);
+    }
+    if (isNewMessage && isIncomingGroupMessage
+      && (state.currentConversation !== event.conversation || document.hidden)) {
+      markConversationUnread(event.conversation);
+    }
     if (state.currentConversation === event.conversation) renderMessages();
     renderConversationNavigation();
     return;
@@ -833,6 +1204,10 @@ function handleSocketEvent(event) {
     if (member) {
       member.online = event.online;
       member.signature = event.signature || member.signature || "";
+      state.groups.forEach((group) => {
+        const groupMember = group.members.find((item) => item.name === event.name);
+        if (groupMember) groupMember.online = event.online;
+      });
       renderConversation();
     }
     return;
@@ -840,6 +1215,18 @@ function handleSocketEvent(event) {
 
   if (event.type === "profile") {
     renameRemoteMember(event.previousName, event.member);
+    renderConversation();
+    return;
+  }
+
+  if (event.type === "group") {
+    applyGroupView(event.group);
+    renderConversation();
+    return;
+  }
+
+  if (event.type === "group_removed") {
+    removeGroup(event.groupId);
     renderConversation();
   }
 }
@@ -952,8 +1339,130 @@ inputEl.addEventListener("keydown", (event) => {
 });
 
 inputEl.addEventListener("input", resizeInput);
-backToGroupEl.addEventListener("click", () => switchConversation("group"));
-groupConversationEl.addEventListener("click", () => switchConversation("group"));
+backToGroupEl.addEventListener("click", () => {
+  if (isGroupSettingsConversation()) switchConversation(groupConversationIdFor(groupIdFromSettings()));
+  else switchConversation(PUBLIC_GROUP_CONVERSATION);
+});
+conversationTitleButtonEl.addEventListener("click", () => {
+  if (isGroupConversation()) switchConversation(groupSettingsIdFor(groupIdForConversation()));
+});
+
+groupMenuToggleEl.addEventListener("click", (event) => {
+  event.stopPropagation();
+  if (!groupMenuEl.hidden) {
+    hideGroupMenu();
+    return;
+  }
+  hideFriendMenu();
+  const rect = groupMenuToggleEl.getBoundingClientRect();
+  groupMenuEl.hidden = false;
+  state.groupMenuOpen = true;
+  const menuRect = groupMenuEl.getBoundingClientRect();
+  groupMenuEl.style.left = `${Math.max(8, Math.min(rect.right - menuRect.width, window.innerWidth - menuRect.width - 8))}px`;
+  groupMenuEl.style.top = `${Math.min(rect.bottom + 4, window.innerHeight - menuRect.height - 8)}px`;
+});
+
+newGroupEl.addEventListener("click", () => {
+  hideGroupMenu();
+  switchConversation("group-create");
+});
+
+function selectedGroupMemberNames() {
+  return [...groupMemberOptionsEl.querySelectorAll("input[type=checkbox]:checked")]
+    .map((input) => input.value);
+}
+
+function demoGroupView(name, signature, historyVisible, memberNames) {
+  const id = `demo-${Date.now()}`;
+  const names = [...new Set([state.currentUser, ...memberNames])];
+  return {
+    id, name, signature, owner: state.currentUser, isOwner: true, system: false,
+    historyVisible,
+    members: names.map((memberName) => {
+      const member = memberName === state.currentUser ? null : memberByName(memberName);
+      return { name: memberName, online: member ? member.online : true, owner: memberName === state.currentUser };
+    })
+  };
+}
+
+groupFormEl.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const name = groupNameInputEl.value.trim();
+  if (!name) {
+    setFormStatus(groupSaveStatusEl, "群聊名称不能为空", true);
+    return;
+  }
+  if (name === PUBLIC_GROUP_NAME) {
+    setFormStatus(groupSaveStatusEl, `${PUBLIC_GROUP_NAME}是系统保留群名`, true);
+    return;
+  }
+  const memberNames = selectedGroupMemberNames().filter((memberName) => memberName !== state.currentUser);
+  if (isGroupCreateConversation() && memberNames.length === 0) {
+    setFormStatus(groupSaveStatusEl, "至少选择一名成员", true);
+    return;
+  }
+  const editing = isGroupSettingsConversation();
+  const groupId = editing ? groupIdFromSettings() : "";
+  const body = {
+    id: groupId,
+    name,
+    signature: groupSignatureInputEl.value.trim(),
+    historyVisible: groupHistoryVisibleEl.checked,
+    members: memberNames
+  };
+  groupSaveEl.disabled = true;
+  try {
+    const group = backendEnabled
+      ? await apiRequest("/api/groups", { method: editing ? "PATCH" : "POST", body })
+      : demoGroupView(name, body.signature, body.historyVisible, memberNames);
+    applyGroupView(group);
+    setFormStatus(groupSaveStatusEl, editing ? "群聊配置已保存" : "群聊已创建");
+    switchConversation(groupConversationIdFor(group.id));
+  } catch (error) {
+    setFormStatus(groupSaveStatusEl, error.message, true);
+    groupSaveEl.disabled = false;
+  }
+});
+
+groupTransferEl.addEventListener("click", async () => {
+  const group = currentGroup();
+  const newOwner = groupTransferOwnerEl.value;
+  if (!group || !newOwner) return;
+  try {
+    const updated = await apiRequest("/api/groups/transfer", {
+      method: "POST", body: { id: group.id, newOwner }
+    });
+    applyGroupView(updated);
+    setFormStatus(groupOwnerStatusEl, "群主已转移");
+    switchConversation(groupSettingsIdFor(group.id));
+  } catch (error) {
+    setFormStatus(groupOwnerStatusEl, error.message, true);
+  }
+});
+
+groupDissolveEl.addEventListener("click", async () => {
+  const group = currentGroup();
+  if (!group || !window.confirm(`确定解散“${group.name}”吗？群消息也会被删除。`)) return;
+  try {
+    await apiRequest("/api/groups/dissolve", { method: "POST", body: { id: group.id } });
+    removeGroup(group.id);
+    switchConversation(PUBLIC_GROUP_CONVERSATION);
+  } catch (error) {
+    setFormStatus(groupOwnerStatusEl, error.message, true);
+  }
+});
+
+groupLeaveEl.addEventListener("click", async () => {
+  const group = currentGroup();
+  if (!group || !window.confirm(`确定退出“${group.name}”吗？`)) return;
+  try {
+    await apiRequest("/api/groups/leave", { method: "POST", body: { id: group.id } });
+    removeGroup(group.id);
+    switchConversation(PUBLIC_GROUP_CONVERSATION);
+  } catch (error) {
+    setFormStatus(groupMemberStatusEl, error.message, true);
+  }
+});
 
 sidebarToggleEl.addEventListener("click", () => {
   setSidebar(!sidebarEl.classList.contains("open"));
@@ -1071,9 +1580,11 @@ parseLatexEl.addEventListener("change", () => {
 clearMessagesEl.addEventListener("click", async () => {
   try {
     if (backendEnabled) {
-      await apiRequest("/api/conversations/clear", { method: "POST", body: { target: "group" } });
+      await apiRequest("/api/conversations/clear", {
+        method: "POST", body: { target: PUBLIC_GROUP_CONVERSATION }
+      });
     }
-    state.conversations.group = [];
+    state.conversations[PUBLIC_GROUP_CONVERSATION] = [];
     setFormStatus(profileSaveStatusEl, "群聊记录已清空");
   } catch (error) {
     setFormStatus(profileSaveStatusEl, error.message, true);
@@ -1089,8 +1600,10 @@ clearFriendMessagesEl.addEventListener("click", async () => {
     }
     const conversationId = conversationIdFor(name);
     state.conversations[conversationId] = [];
+    clearConversationUnread(conversationId);
     hideFriendMenu();
     if (state.currentConversation === conversationId) renderMessages();
+    renderConversationNavigation();
   } catch (_) {}
 });
 
@@ -1135,10 +1648,11 @@ deleteFriendEl.addEventListener("click", async () => {
     const conversationId = conversationIdFor(name);
     state.friends.delete(name);
     state.friendColors.delete(name);
+    clearConversationUnread(conversationId);
     if (!backendEnabled) persistDemoFriendColors();
     hideFriendMenu();
     if (state.currentConversation === conversationId) {
-      switchConversation("group");
+      switchConversation(PUBLIC_GROUP_CONVERSATION);
       return;
     }
     renderFriends();
@@ -1162,13 +1676,23 @@ logoutEl.addEventListener("click", async () => {
 
 document.addEventListener("click", (event) => {
   if (!friendMenuEl.hidden && !friendMenuEl.contains(event.target)) hideFriendMenu();
+  if (!groupMenuEl.hidden && !groupMenuEl.contains(event.target)
+    && event.target !== groupMenuToggleEl) hideGroupMenu();
 });
 
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
     hideFriendMenu();
+    hideGroupMenu();
     setSidebar(false);
   }
+});
+
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden || !state.currentConversation.startsWith("dm:")) return;
+  if (unreadCountFor(state.currentConversation) === 0) return;
+  clearConversationUnread(state.currentConversation);
+  renderConversationNavigation();
 });
 
 const storedTheme = localStorage.getItem("whisper-theme");
