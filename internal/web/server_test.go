@@ -173,7 +173,7 @@ func TestGroupAPIAndOwnerPermission(t *testing.T) {
 	_ = response.Body.Close()
 
 	response = jsonRequest(t, aliceClient, http.MethodPost, server.URL+"/api/groups", map[string]any{
-		"name": "项目组", "signature": "一起推进", "historyVisible": false, "members": []string{"bob"},
+		"name": "项目组", "signature": "一起推进", "members": []string{"bob"},
 	})
 	if response.StatusCode != http.StatusCreated {
 		t.Fatalf("create group status = %d", response.StatusCode)
@@ -186,6 +186,16 @@ func TestGroupAPIAndOwnerPermission(t *testing.T) {
 	if !group.IsOwner || group.Name != "项目组" {
 		t.Fatalf("unexpected group response: %#v", group)
 	}
+	if !group.HistoryVisible {
+		t.Fatal("new groups should allow history by default")
+	}
+	response = jsonRequest(t, aliceClient, http.MethodPatch, server.URL+"/api/groups", map[string]any{
+		"id": group.ID, "name": "项目组", "historyVisible": false, "members": []string{"bob"},
+	})
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("disable history status = %d", response.StatusCode)
+	}
+	_ = response.Body.Close()
 
 	response, err = bobClient.Get(server.URL + "/api/bootstrap")
 	if err != nil {

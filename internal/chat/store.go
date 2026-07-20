@@ -28,7 +28,7 @@ const (
 	MaxNameRunes    = 7
 	MaxMessage      = 2000
 	MaxGroupName    = 32
-	schemaVersion   = 2
+	schemaVersion   = 4
 )
 
 var (
@@ -101,12 +101,13 @@ type GroupMutation struct {
 }
 
 type Bootstrap struct {
-	Self          SelfView                 `json:"self"`
-	Members       []MemberView             `json:"members"`
-	Friends       []string                 `json:"friends"`
-	FriendColors  map[string]string        `json:"friendColors"`
-	Groups        []GroupView              `json:"groups"`
-	Conversations map[string][]MessageView `json:"conversations"`
+	Self           SelfView                 `json:"self"`
+	Members        []MemberView             `json:"members"`
+	Friends        []string                 `json:"friends"`
+	FriendColors   map[string]string        `json:"friendColors"`
+	Groups         []GroupView              `json:"groups"`
+	ServerInstance string                   `json:"serverInstance,omitempty"`
+	Conversations  map[string][]MessageView `json:"conversations"`
 }
 
 type DeliveryNotice struct {
@@ -206,6 +207,10 @@ func NewStore(config StoreConfig) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if err := store.DeleteExpiredSessions(time.Now()); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	if err := os.Chmod(databasePath, 0o600); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -265,6 +270,14 @@ func (s *Store) initializeSchema() error {
 			PRIMARY KEY (user_id, friend_id),
 			FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 		)`,
+		`CREATE TABLE IF NOT EXISTS sessions (
+			token_hash TEXT PRIMARY KEY,
+			user_id TEXT NOT NULL,
+			expires_at TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+		)`,
+		`CREATE INDEX IF NOT EXISTS sessions_expiry_idx ON sessions(expires_at)`,
 		`CREATE TABLE IF NOT EXISTS groups (
 			id TEXT PRIMARY KEY,
 			name TEXT NOT NULL,
@@ -303,7 +316,7 @@ func (s *Store) initializeSchema() error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS messages_sent_at_idx ON messages(sent_at, id)`,
 		`CREATE INDEX IF NOT EXISTS messages_recipient_idx ON messages(to_id, delivered_at)`,
-		`INSERT INTO meta(key, value) VALUES ('schema_version', '2')
+		`INSERT INTO meta(key, value) VALUES ('schema_version', '4')
 			ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
 	}
 	for _, statement := range statements {
@@ -349,7 +362,10 @@ func (s *Store) migrateGroups() error {
 	}
 	now := time.Now().Format(time.RFC3339Nano)
 	if _, err := tx.Exec(`INSERT OR IGNORE INTO groups(id, name, signature, owner_id, history_visible, system, created_at)
-		VALUES (?, ?, '', NULL, 0, 1, ?)`, PublicGroupID, PublicGroupName, now); err != nil {
+		VALUES (?, ?, '', NULL, 1, 1, ?)`, PublicGroupID, PublicGroupName, now); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE groups SET history_visible = 1 WHERE id = ?`, PublicGroupID); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(`INSERT OR IGNORE INTO group_members(group_id, user_id, history_from)

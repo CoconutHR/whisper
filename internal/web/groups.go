@@ -10,7 +10,7 @@ type groupRequest struct {
 	ID             string   `json:"id"`
 	Name           string   `json:"name"`
 	Signature      string   `json:"signature"`
-	HistoryVisible bool     `json:"historyVisible"`
+	HistoryVisible *bool    `json:"historyVisible"`
 	Members        []string `json:"members"`
 }
 
@@ -21,14 +21,26 @@ func (s *Server) handleGroups(w http.ResponseWriter, r *http.Request, userID str
 	}
 	var mutation chat.GroupMutation
 	var err error
+	historyVisible := true
+	if request.HistoryVisible != nil {
+		historyVisible = *request.HistoryVisible
+	}
 	switch r.Method {
 	case http.MethodPost:
 		mutation, _, err = s.store.CreateGroup(
-			userID, request.Name, request.Signature, request.HistoryVisible, request.Members,
+			userID, request.Name, request.Signature, historyVisible, request.Members,
 		)
 	case http.MethodPatch:
+		if request.HistoryVisible == nil {
+			current, currentErr := s.store.GroupViewForUser(request.ID, userID, s.hub.onlineIDs())
+			if currentErr != nil {
+				writeError(w, http.StatusBadRequest, currentErr)
+				return
+			}
+			historyVisible = current.HistoryVisible
+		}
 		mutation, _, err = s.store.UpdateGroup(
-			userID, request.ID, request.Name, request.Signature, request.HistoryVisible, request.Members,
+			userID, request.ID, request.Name, request.Signature, historyVisible, request.Members,
 		)
 	default:
 		methodNotAllowed(w, http.MethodPost, http.MethodPatch)

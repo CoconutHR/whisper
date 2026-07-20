@@ -27,6 +27,7 @@ let backendAuthenticated = false;
 let authMode = "login";
 let socket = null;
 let reconnectTimer = null;
+let serverInstance = "";
 
 function seedTimestamp(daysAgo, hour, minute, second, millisecond) {
   const date = new Date();
@@ -793,7 +794,7 @@ function renderGroupPanel() {
   groupPanelTitleEl.textContent = createMode ? "新建群聊" : group ? `${group.name} 群聊信息` : "群聊信息";
   groupNameInputEl.value = createMode ? "" : group?.name || "";
   groupSignatureInputEl.value = createMode ? "" : group?.signature || "";
-  groupHistoryVisibleEl.checked = createMode ? false : Boolean(group?.historyVisible);
+  groupHistoryVisibleEl.checked = createMode ? true : Boolean(group?.historyVisible);
   groupNameInputEl.disabled = !editable;
   groupSignatureInputEl.disabled = !editable;
   groupHistoryVisibleEl.disabled = !editable;
@@ -1090,6 +1091,11 @@ function removeGroup(groupId) {
 }
 
 function hydrateBootstrap(payload) {
+  if (serverInstance && payload.serverInstance && serverInstance !== payload.serverInstance) {
+    window.location.reload();
+    return false;
+  }
+  if (payload.serverInstance) serverInstance = payload.serverInstance;
   state.currentUser = payload.self.name;
   state.profile.signature = payload.self.signature || "";
   state.currentConversation = PUBLIC_GROUP_CONVERSATION;
@@ -1246,7 +1252,7 @@ function connectSocket() {
     reconnectTimer = window.setTimeout(async () => {
       try {
         const payload = await apiRequest("/api/bootstrap");
-        hydrateBootstrap(payload);
+        if (hydrateBootstrap(payload) === false) return;
         renderConversation();
         connectSocket();
       } catch (error) {
@@ -1285,7 +1291,7 @@ async function startApplication() {
 
   try {
     const payload = await apiRequest("/api/bootstrap");
-    hydrateBootstrap(payload);
+    if (hydrateBootstrap(payload) === false) return;
     showApplicationUI();
     connectSocket();
   } catch (error) {
@@ -1314,7 +1320,7 @@ authFormEl.addEventListener("submit", async (event) => {
       body: { name, password }
     });
     const payload = await apiRequest("/api/bootstrap");
-    hydrateBootstrap(payload);
+    if (hydrateBootstrap(payload) === false) return;
     authFormEl.reset();
     showApplicationUI();
     connectSocket();

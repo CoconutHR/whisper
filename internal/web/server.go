@@ -11,7 +11,6 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -26,24 +25,18 @@ type Config struct {
 	StaticDir string
 }
 
-type session struct {
-	userID    string
-	expiresAt time.Time
-}
-
 type Server struct {
-	config   Config
-	store    *chat.Store
-	hub      *hub
-	sessions map[string]session
-	sessionM sync.Mutex
-	logger   *slog.Logger
-	upgrader websocket.Upgrader
+	config     Config
+	store      *chat.Store
+	hub        *hub
+	instanceID string
+	logger     *slog.Logger
+	upgrader   websocket.Upgrader
 }
 
 func NewServer(config Config, store *chat.Store, logger *slog.Logger) *Server {
 	server := &Server{
-		config: config, store: store, hub: newHub(), sessions: map[string]session{}, logger: logger,
+		config: config, store: store, hub: newHub(), instanceID: randomToken(), logger: logger,
 	}
 	server.upgrader = websocket.Upgrader{
 		ReadBufferSize:  4096,
@@ -103,7 +96,10 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	s.setSession(w, user.ID)
+	if err := s.setSession(w, user.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	writeJSON(w, http.StatusCreated, user)
 }
 
@@ -124,7 +120,10 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, chat.ErrUnauthorized)
 		return
 	}
-	s.setSession(w, user.ID)
+	if err := s.setSession(w, user.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, user)
 }
 
@@ -134,9 +133,10 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if cookie, err := r.Cookie(sessionCookie); err == nil {
-		s.sessionM.Lock()
-		delete(s.sessions, cookie.Value)
-		s.sessionM.Unlock()
+		if err := s.store.DeleteSession(cookie.Value); err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
 	}
 	http.SetCookie(w, &http.Cookie{
 		Name: sessionCookie, Value: "", Path: "/", MaxAge: -1,
@@ -156,6 +156,7 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request, userID 
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	bootstrap.ServerInstance = s.instanceID
 	writeJSON(w, http.StatusOK, bootstrap)
 }
 
@@ -421,16 +422,17 @@ func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, filepath.Join(s.config.StaticDir, name))
 }
 
-func (s *Server) setSession(w http.ResponseWriter, userID string) {
+func (s *Server) setSession(w http.ResponseWriter, userID string) error {
 	token := randomToken()
 	expires := time.Now().Add(30 * 24 * time.Hour)
-	s.sessionM.Lock()
-	s.sessions[token] = session{userID: userID, expiresAt: expires}
-	s.sessionM.Unlock()
+	if err := s.store.CreateSession(token, userID, expires); err != nil {
+		return err
+	}
 	http.SetCookie(w, &http.Cookie{
 		Name: sessionCookie, Value: token, Path: "/", Expires: expires,
 		HttpOnly: true, SameSite: http.SameSiteStrictMode,
 	})
+	return nil
 }
 
 func (s *Server) authenticatedUser(r *http.Request) (string, bool) {
@@ -438,14 +440,11 @@ func (s *Server) authenticatedUser(r *http.Request) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	s.sessionM.Lock()
-	defer s.sessionM.Unlock()
-	current, ok := s.sessions[cookie.Value]
-	if !ok || time.Now().After(current.expiresAt) {
-		delete(s.sessions, cookie.Value)
+	userID, ok, err := s.store.SessionUser(cookie.Value, time.Now())
+	if err != nil {
 		return "", false
 	}
-	return current.userID, true
+	return userID, ok
 }
 
 type authenticatedHandler func(http.ResponseWriter, *http.Request, string)

@@ -29,7 +29,8 @@ internal/chat
 - `Group`：稳定 ID、群名、群个签、群主、历史可见策略和系统群标记。
 - `GroupMember`：群 ID、用户 ID 和该成员可见消息的 `history_from` 边界。
 - `Message`：稳定 ID、群聊/私聊类型、群 ID、发送者 ID、接收者 ID、正文、发送时间和送达时间。
-- `Session`：随机 256 位令牌，仅保存在服务进程内存中。
+- `Session`：随机令牌只通过 HttpOnly Cookie 发给浏览器，SQLite 只保存 token 哈希、用户 ID、创建时间和过期时间。
+- `ServerInstance`：每次服务启动生成的实例标识，通过 bootstrap 返回，用于客户端检测更新后自动刷新资源。
 
 用户名可以修改，但消息和好友关系使用稳定用户 ID，因此改名不会破坏历史会话。
 
@@ -50,6 +51,7 @@ internal/chat
 - `groups`、`group_members`：公共大厅和普通群聊、成员关系及历史可见边界。
 - `messages`：各群聊、私聊、离线送达状态和时间。
 - `cleared_at`：各用户的会话可见边界。
+- `sessions`：可跨服务重启恢复的登录会话及过期时间。
 - `meta`：schema 版本。
 
 SQLite 开启 WAL、外键检查和 5 秒 busy timeout。写操作使用事务，服务重启后直接从 `data/whisper.db` 恢复。旧的 `data/state.json` 不会被读取或迁移。

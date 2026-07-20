@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func containsString(values []string, target string) bool {
@@ -307,6 +308,50 @@ func TestSQLitePersistsAcrossRestart(t *testing.T) {
 	}
 	if len(view.Conversations[GroupConversationKey(PublicGroupID)]) != 1 || view.Conversations[GroupConversationKey(PublicGroupID)][0].Text != "persisted" {
 		t.Fatalf("messages after restart = %#v", view.Conversations[GroupConversationKey(PublicGroupID)])
+	}
+}
+
+func TestSessionsPersistAcrossRestart(t *testing.T) {
+	directory := t.TempDir()
+	config := StoreConfig{
+		DatabasePath:   filepath.Join(directory, "whisper.db"),
+		UserBackupPath: filepath.Join(directory, "users-backup.json"),
+	}
+	store, err := NewStore(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, err := store.Register("alice", "secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expiresAt := time.Now().Add(time.Hour)
+	if err := store.CreateSession("session-token", user.ID, expiresAt); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err = NewStore(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if got, ok, err := store.SessionUser("session-token", time.Now()); err != nil || !ok || got != user.ID {
+		t.Fatalf("persisted session = %q, %v, %v", got, ok, err)
+	}
+	if err := store.CreateSession("expired-token", user.ID, time.Now().Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := store.SessionUser("expired-token", time.Now()); err != nil || ok {
+		t.Fatalf("expired session = %v, %v", ok, err)
+	}
+	if err := store.DeleteSession("session-token"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := store.SessionUser("session-token", time.Now()); err != nil || ok {
+		t.Fatalf("deleted session = %v, %v", ok, err)
 	}
 }
 
