@@ -1,13 +1,52 @@
 package chat
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestMessageAttachmentV7MigrationRemovesAssetUniqueness(t *testing.T) {
+	directory := t.TempDir()
+	databasePath := filepath.Join(directory, "whisper.db")
+	db, err := sql.Open("sqlite", databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE message_attachments (
+		message_id TEXT NOT NULL,
+		attachment_id TEXT NOT NULL UNIQUE,
+		position INTEGER NOT NULL,
+		PRIMARY KEY (message_id, attachment_id)
+	)`); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := NewStore(StoreConfig{
+		DatabasePath: databasePath, UserBackupPath: filepath.Join(directory, "users-backup.json"),
+	})
+	if err != nil {
+		t.Fatalf("migrate v6 database: %v", err)
+	}
+	defer store.Close()
+	var tableSQL string
+	if err := store.db.QueryRow(`SELECT sql FROM sqlite_master
+		WHERE type = 'table' AND name = 'message_attachments'`).Scan(&tableSQL); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.ToUpper(tableSQL), "ATTACHMENT_ID TEXT NOT NULL UNIQUE") {
+		t.Fatalf("attachment uniqueness remains after migration: %s", tableSQL)
+	}
+}
 
 func containsString(values []string, target string) bool {
 	for _, value := range values {

@@ -162,17 +162,49 @@
   <footer id="footer">
     <div class="container">
       <form id="chatform" class="messages" autocomplete="off">
-        <textarea
-          id="chatinput"
-          rows="1"
-          maxlength="2000"
-          placeholder="发送到群聊..."
-          aria-label="消息"
-          autofocus
-        ></textarea>
+        <button
+          id="content-picker-toggle"
+          class="composer-tool-button"
+          type="button"
+          aria-label="打开表情和附件"
+          aria-expanded="false"
+          title="表情和附件"
+        ><span aria-hidden="true">&#9786;</span></button>
+        <div class="composer-main">
+          <div id="attachment-drafts" class="attachment-drafts" aria-label="待发送文件" hidden></div>
+          <textarea
+            id="chatinput"
+            rows="1"
+            maxlength="2000"
+            placeholder="发送到群聊..."
+            aria-label="消息"
+            autofocus
+          ></textarea>
+          <span id="composer-status" class="composer-status" role="status" hidden></span>
+        </div>
         <button id="send-message" class="send-button" type="submit" aria-label="发送消息" title="发送消息">
           <span aria-hidden="true">&#8593;</span>
         </button>
+        <input id="attachment-file-input" type="file" multiple hidden>
+        <input id="sticker-file-input" type="file" accept="image/gif,image/jpeg,image/png,image/webp" multiple hidden>
+        <div id="content-picker" class="content-picker" role="dialog" aria-label="表情和附件" hidden>
+          <div class="picker-panels">
+            <div id="emoji-panel" class="picker-panel emoji-grid" role="tabpanel" aria-labelledby="emoji-tab"></div>
+            <div id="sticker-panel" class="picker-panel sticker-grid" role="tabpanel" aria-labelledby="sticker-tab" hidden></div>
+            <div id="file-panel" class="picker-panel file-panel" role="tabpanel" aria-labelledby="file-tab" hidden>
+              <button id="choose-files" class="choose-files-button" type="button">
+                <span aria-hidden="true">&#128206;</span>
+                <span>选择文件</span>
+              </button>
+              <span id="file-panel-status" class="picker-panel-status" role="status"></span>
+            </div>
+          </div>
+          <div class="picker-tabs" role="tablist" aria-label="内容类型">
+            <button id="emoji-tab" class="active" type="button" role="tab" aria-selected="true" data-picker-tab="emoji">Emoji</button>
+            <button id="sticker-tab" type="button" role="tab" aria-selected="false" data-picker-tab="sticker">表情包</button>
+            <button id="file-tab" type="button" role="tab" aria-selected="false" data-picker-tab="file">文件</button>
+          </div>
+        </div>
       </form>
     </div>
   </footer>
@@ -226,6 +258,45 @@
     <div class="context-menu-separator"></div>
     <button id="clear-friend-messages" type="button" role="menuitem">清空消息记录</button>
     <button id="delete-friend" class="danger" type="button" role="menuitem">删除好友</button>
+  </div>
+
+  <div id="media-menu" class="context-menu media-menu" role="menu" aria-label="媒体操作" hidden>
+    <button type="button" role="menuitem" data-media-action="preview">查看</button>
+    <button type="button" role="menuitem" data-media-action="collect">收藏为表情包</button>
+    <button type="button" role="menuitem" data-media-action="download">下载</button>
+    <button type="button" role="menuitem" data-media-action="forward">转发</button>
+    <button type="button" role="menuitem" data-media-action="recall">撤回</button>
+    <button class="danger" type="button" role="menuitem" data-media-action="remove-sticker">移除表情包</button>
+  </div>
+
+  <div id="forward-dialog" class="modal-layer" role="dialog" aria-modal="true" aria-labelledby="forward-title" hidden>
+    <section class="forward-dialog">
+      <header class="modal-header">
+        <h2 id="forward-title">转发文件</h2>
+        <button id="forward-close" class="modal-icon-button" type="button" aria-label="关闭" title="关闭">×</button>
+      </header>
+      <div id="forward-targets" class="forward-targets"></div>
+      <p id="forward-status" class="modal-status" role="status" hidden></p>
+    </section>
+  </div>
+
+  <div id="image-viewer" class="image-viewer" role="dialog" aria-modal="true" aria-label="图片查看器" hidden>
+    <header class="image-viewer-toolbar">
+      <span id="image-viewer-count" class="image-viewer-count"></span>
+      <div class="image-viewer-tools">
+        <button id="image-zoom-out" type="button" aria-label="缩小" title="缩小">−</button>
+        <button id="image-zoom-reset" type="button" aria-label="恢复原始缩放" title="恢复原始缩放">100%</button>
+        <button id="image-zoom-in" type="button" aria-label="放大" title="放大">＋</button>
+        <button id="image-viewer-download" type="button" aria-label="下载图片" title="下载图片">↓</button>
+        <button id="image-viewer-close" type="button" aria-label="关闭" title="关闭">×</button>
+      </div>
+    </header>
+    <button id="image-viewer-previous" class="image-viewer-navigation previous" type="button" aria-label="上一张" title="上一张">‹</button>
+    <div id="image-viewer-stage" class="image-viewer-stage">
+      <img id="image-viewer-image" alt="">
+    </div>
+    <button id="image-viewer-next" class="image-viewer-navigation next" type="button" aria-label="下一张" title="下一张">›</button>
+    <p id="image-viewer-caption" class="image-viewer-caption"></p>
   </div>
 
   <script src="app.js"></script>

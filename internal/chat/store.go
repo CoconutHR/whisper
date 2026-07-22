@@ -28,7 +28,8 @@ const (
 	MaxNameRunes    = 7
 	MaxMessage      = 2000
 	MaxGroupName    = 32
-	schemaVersion   = 5
+	schemaVersion   = 7
+	RecallWindow    = 2 * time.Minute
 )
 
 var (
@@ -36,6 +37,15 @@ var (
 	ErrNotFound     = errors.New("用户不存在")
 	ErrNameTaken    = errors.New("该名称已被使用")
 )
+
+var validStickerIDs = map[string]bool{
+	"bright-day":  true,
+	"great-job":   true,
+	"got-it":      true,
+	"keep-going":  true,
+	"many-thanks": true,
+	"wow-moment":  true,
+}
 
 type Settings struct {
 	ShowMessageTime bool   `json:"showMessageTime"`
@@ -45,14 +55,63 @@ type Settings struct {
 }
 
 type Message struct {
-	ID          string     `json:"id"`
-	Kind        string     `json:"kind"`
-	FromID      string     `json:"fromId"`
-	ToID        string     `json:"toId,omitempty"`
-	Text        string     `json:"text"`
-	SentAt      time.Time  `json:"sentAt"`
-	DeliveredAt *time.Time `json:"deliveredAt,omitempty"`
-	GroupID     string     `json:"groupId,omitempty"`
+	ID                string           `json:"id"`
+	Kind              string           `json:"kind"`
+	FromID            string           `json:"fromId"`
+	ToID              string           `json:"toId,omitempty"`
+	Text              string           `json:"text"`
+	Sticker           string           `json:"sticker,omitempty"`
+	StickerAttachment *AttachmentView  `json:"stickerAttachment,omitempty"`
+	SentAt            time.Time        `json:"sentAt"`
+	DeliveredAt       *time.Time       `json:"deliveredAt,omitempty"`
+	RecalledAt        *time.Time       `json:"recalledAt,omitempty"`
+	GroupID           string           `json:"groupId,omitempty"`
+	Attachments       []AttachmentView `json:"attachments,omitempty"`
+}
+
+type MessageContent struct {
+	Text                string   `json:"text"`
+	Sticker             string   `json:"sticker,omitempty"`
+	StickerAttachmentID string   `json:"stickerAttachmentId,omitempty"`
+	ForwardAttachmentID string   `json:"forwardAttachmentId,omitempty"`
+	AttachmentIDs       []string `json:"attachmentIds,omitempty"`
+}
+
+func normalizeMessageContent(content MessageContent) (MessageContent, error) {
+	content.Text = strings.TrimSpace(content.Text)
+	content.Sticker = strings.TrimSpace(content.Sticker)
+	content.StickerAttachmentID = strings.TrimSpace(content.StickerAttachmentID)
+	content.ForwardAttachmentID = strings.TrimSpace(content.ForwardAttachmentID)
+	if utf8.RuneCountInString(content.Text) > MaxMessage {
+		return MessageContent{}, fmt.Errorf("消息不能超过%d个字符", MaxMessage)
+	}
+	if content.Sticker != "" {
+		if !validStickerIDs[content.Sticker] {
+			return MessageContent{}, errors.New("未知表情包")
+		}
+	}
+	standaloneMedia := 0
+	if content.Sticker != "" {
+		standaloneMedia++
+	}
+	if content.StickerAttachmentID != "" {
+		standaloneMedia++
+	}
+	if content.ForwardAttachmentID != "" {
+		standaloneMedia++
+	}
+	if standaloneMedia > 0 {
+		if standaloneMedia > 1 || content.Text != "" || len(content.AttachmentIDs) > 0 {
+			return MessageContent{}, errors.New("表情包或转发文件需要单独发送")
+		}
+	}
+	if content.Text == "" && standaloneMedia == 0 && len(content.AttachmentIDs) == 0 {
+		return MessageContent{}, errors.New("消息不能为空")
+	}
+	if len(content.AttachmentIDs) > MaxAttachmentsPerMessage {
+		return MessageContent{}, fmt.Errorf("每条消息最多发送%d个文件", MaxAttachmentsPerMessage)
+	}
+	return content, nil
 }
 
 type SelfView struct {
@@ -70,12 +129,17 @@ type MemberView struct {
 }
 
 type MessageView struct {
-	ID       string `json:"id"`
-	From     string `json:"from"`
-	Text     string `json:"text"`
-	SentAt   string `json:"sentAt"`
-	Delivery string `json:"delivery"`
-	System   bool   `json:"system,omitempty"`
+	ID                string           `json:"id"`
+	From              string           `json:"from"`
+	Text              string           `json:"text"`
+	Sticker           string           `json:"sticker,omitempty"`
+	StickerAttachment *AttachmentView  `json:"stickerAttachment,omitempty"`
+	SentAt            string           `json:"sentAt"`
+	Delivery          string           `json:"delivery"`
+	System            bool             `json:"system,omitempty"`
+	Recalled          bool             `json:"recalled,omitempty"`
+	CanRecall         bool             `json:"canRecall,omitempty"`
+	Attachments       []AttachmentView `json:"attachments,omitempty"`
 }
 
 type GroupMemberView struct {
@@ -108,6 +172,8 @@ type Bootstrap struct {
 	FriendColors   map[string]string        `json:"friendColors"`
 	Groups         []GroupView              `json:"groups"`
 	ServerInstance string                   `json:"serverInstance,omitempty"`
+	UploadsEnabled bool                     `json:"uploadsEnabled"`
+	Stickers       []AttachmentView         `json:"stickers"`
 	Conversations  map[string][]MessageView `json:"conversations"`
 }
 
@@ -313,20 +379,62 @@ func (s *Store) initializeSchema() error {
 			to_id TEXT,
 			group_id TEXT,
 			text TEXT NOT NULL,
+			sticker TEXT NOT NULL DEFAULT '',
 			sent_at TEXT NOT NULL,
-			delivered_at TEXT
+			delivered_at TEXT,
+			recalled_at TEXT
 		)`,
+		`CREATE TABLE IF NOT EXISTS attachments (
+			id TEXT PRIMARY KEY,
+			uploader_id TEXT NOT NULL,
+			object_key TEXT NOT NULL UNIQUE,
+			original_name TEXT NOT NULL,
+			content_type TEXT NOT NULL,
+			size INTEGER NOT NULL,
+			status TEXT NOT NULL CHECK (status IN ('pending', 'ready', 'attached')),
+			created_at TEXT NOT NULL,
+			FOREIGN KEY (uploader_id) REFERENCES users(id) ON DELETE CASCADE
+		)`,
+		`CREATE INDEX IF NOT EXISTS attachments_draft_idx ON attachments(status, created_at)`,
+		`CREATE TABLE IF NOT EXISTS message_attachments (
+			message_id TEXT NOT NULL,
+			attachment_id TEXT NOT NULL,
+			position INTEGER NOT NULL,
+			PRIMARY KEY (message_id, attachment_id),
+			FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE,
+			FOREIGN KEY (attachment_id) REFERENCES attachments(id) ON DELETE CASCADE
+		)`,
+		`CREATE INDEX IF NOT EXISTS message_attachments_asset_idx ON message_attachments(attachment_id)`,
+		`CREATE TABLE IF NOT EXISTS user_stickers (
+			user_id TEXT NOT NULL,
+			attachment_id TEXT NOT NULL,
+			position INTEGER NOT NULL,
+			created_at TEXT NOT NULL,
+			PRIMARY KEY (user_id, attachment_id),
+			FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+			FOREIGN KEY (attachment_id) REFERENCES attachments(id) ON DELETE CASCADE
+		)`,
+		`CREATE TABLE IF NOT EXISTS message_stickers (
+			message_id TEXT PRIMARY KEY,
+			attachment_id TEXT NOT NULL,
+			FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE,
+			FOREIGN KEY (attachment_id) REFERENCES attachments(id) ON DELETE CASCADE
+		)`,
+		`CREATE INDEX IF NOT EXISTS message_stickers_asset_idx ON message_stickers(attachment_id)`,
 		`CREATE INDEX IF NOT EXISTS messages_sent_at_idx ON messages(sent_at, id)`,
 		`CREATE INDEX IF NOT EXISTS messages_recipient_idx ON messages(to_id, delivered_at)`,
-		`INSERT INTO meta(key, value) VALUES ('schema_version', '5')
-			ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
 	}
 	for _, statement := range statements {
 		if _, err := s.db.Exec(statement); err != nil {
 			return fmt.Errorf("初始化 SQLite: %w", err)
 		}
 	}
-	return s.migrateGroups()
+	if err := s.migrateGroups(); err != nil {
+		return err
+	}
+	_, err := s.db.Exec(`INSERT INTO meta(key, value) VALUES ('schema_version', ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value`, schemaVersion)
+	return err
 }
 
 func (s *Store) migrateGroups() error {
@@ -341,6 +449,8 @@ func (s *Store) migrateGroups() error {
 		return err
 	}
 	hasGroupID := false
+	hasSticker := false
+	hasRecalledAt := false
 	for columns.Next() {
 		var cid int
 		var name, columnType string
@@ -353,12 +463,57 @@ func (s *Store) migrateGroups() error {
 		if name == "group_id" {
 			hasGroupID = true
 		}
+		if name == "sticker" {
+			hasSticker = true
+		}
+		if name == "recalled_at" {
+			hasRecalledAt = true
+		}
 	}
 	if err := columns.Close(); err != nil {
 		return err
 	}
 	if !hasGroupID {
 		if _, err := tx.Exec(`ALTER TABLE messages ADD COLUMN group_id TEXT`); err != nil {
+			return err
+		}
+	}
+	if !hasSticker {
+		if _, err := tx.Exec(`ALTER TABLE messages ADD COLUMN sticker TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+	}
+	if !hasRecalledAt {
+		if _, err := tx.Exec(`ALTER TABLE messages ADD COLUMN recalled_at TEXT`); err != nil {
+			return err
+		}
+	}
+	var messageAttachmentsSQL string
+	if err := tx.QueryRow(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'message_attachments'`).Scan(&messageAttachmentsSQL); err != nil {
+		return err
+	}
+	if strings.Contains(strings.ToUpper(messageAttachmentsSQL), "ATTACHMENT_ID TEXT NOT NULL UNIQUE") {
+		if _, err := tx.Exec(`CREATE TABLE message_attachments_v7 (
+			message_id TEXT NOT NULL,
+			attachment_id TEXT NOT NULL,
+			position INTEGER NOT NULL,
+			PRIMARY KEY (message_id, attachment_id),
+			FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE,
+			FOREIGN KEY (attachment_id) REFERENCES attachments(id) ON DELETE CASCADE
+		)`); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`INSERT INTO message_attachments_v7(message_id, attachment_id, position)
+			SELECT message_id, attachment_id, position FROM message_attachments`); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`DROP TABLE message_attachments`); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`ALTER TABLE message_attachments_v7 RENAME TO message_attachments`); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`CREATE INDEX message_attachments_asset_idx ON message_attachments(attachment_id)`); err != nil {
 			return err
 		}
 	}
@@ -559,6 +714,10 @@ func (s *Store) Bootstrap(userID string, online map[string]bool) (Bootstrap, err
 		Friends: []string{}, FriendColors: map[string]string{}, Groups: groups,
 		Conversations: conversations,
 	}
+	result.Stickers, err = stickersForUser(tx, userID)
+	if err != nil {
+		return Bootstrap{}, err
+	}
 	otherUsers := make([]*databaseUser, 0, len(users)-1)
 	for _, user := range users {
 		if user.ID != userID {
@@ -608,7 +767,7 @@ func (s *Store) Bootstrap(userID string, online map[string]bool) (Bootstrap, err
 	if err != nil {
 		return Bootstrap{}, err
 	}
-	messageRows, err := tx.Query(`SELECT id, kind, from_id, COALESCE(to_id, ''), COALESCE(group_id, ''), text, sent_at, delivered_at
+	messageRows, err := tx.Query(`SELECT id, kind, from_id, COALESCE(to_id, ''), COALESCE(group_id, ''), text, sticker, sent_at, delivered_at, recalled_at
 		FROM messages WHERE (kind = 'group' AND (group_id IN (SELECT group_id FROM group_members WHERE user_id = ?) OR group_id IS NULL))
 		OR from_id = ? OR to_id = ? ORDER BY sent_at, id`, userID, userID, userID)
 	if err != nil {
@@ -616,6 +775,16 @@ func (s *Store) Bootstrap(userID string, online map[string]bool) (Bootstrap, err
 	}
 	for messageRows.Next() {
 		message, err := scanMessage(messageRows)
+		if err != nil {
+			messageRows.Close()
+			return Bootstrap{}, err
+		}
+		message.Attachments, err = attachmentsForMessage(tx, message.ID)
+		if err != nil {
+			messageRows.Close()
+			return Bootstrap{}, err
+		}
+		message.StickerAttachment, err = stickerForMessage(tx, message.ID)
 		if err != nil {
 			messageRows.Close()
 			return Bootstrap{}, err
@@ -722,20 +891,21 @@ func (s *Store) UpdateSettings(userID string, settings Settings) error {
 }
 
 func (s *Store) SendMessage(fromID, scope, targetName, text string, targetOnline bool) (*Message, string, error) {
+	return s.SendMessageContent(fromID, scope, targetName, MessageContent{Text: text}, targetOnline)
+}
+
+func (s *Store) SendMessageContent(fromID, scope, targetName string, content MessageContent, targetOnline bool) (*Message, string, error) {
 	if scope == "group" {
 		groupID := strings.TrimSpace(targetName)
 		if groupID == "" {
 			groupID = PublicGroupID
 		}
-		message, _, err := s.SendGroupMessage(fromID, groupID, text)
+		message, _, err := s.SendGroupMessageContent(fromID, groupID, content)
 		return message, "", err
 	}
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return nil, "", errors.New("消息不能为空")
-	}
-	if utf8.RuneCountInString(text) > MaxMessage {
-		return nil, "", fmt.Errorf("消息不能超过%d个字符", MaxMessage)
+	content, err := normalizeMessageContent(content)
+	if err != nil {
+		return nil, "", err
 	}
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -750,7 +920,10 @@ func (s *Store) SendMessage(fromID, scope, targetName, text string, targetOnline
 		return nil, "", ErrNotFound
 	}
 
-	message := &Message{ID: randomID(), Kind: scope, FromID: fromID, Text: text, SentAt: time.Now()}
+	message := &Message{
+		ID: randomID(), Kind: scope, FromID: fromID, Text: content.Text,
+		Sticker: content.Sticker, SentAt: time.Now(),
+	}
 	targetID := ""
 	friendChanged := false
 	if scope == "private" {
@@ -790,10 +963,24 @@ func (s *Store) SendMessage(fromID, scope, targetName, text string, targetOnline
 	if message.DeliveredAt != nil {
 		deliveredAt = message.DeliveredAt.Format(time.RFC3339Nano)
 	}
-	if _, err := tx.Exec(`INSERT INTO messages(id, kind, from_id, to_id, text, sent_at, delivered_at)
-		VALUES (?, ?, ?, NULLIF(?, ''), ?, ?, ?)`, message.ID, message.Kind, message.FromID,
-		message.ToID, message.Text, message.SentAt.Format(time.RFC3339Nano), deliveredAt); err != nil {
+	if _, err := tx.Exec(`INSERT INTO messages(id, kind, from_id, to_id, text, sticker, sent_at, delivered_at)
+		VALUES (?, ?, ?, NULLIF(?, ''), ?, ?, ?, ?)`, message.ID, message.Kind, message.FromID,
+		message.ToID, message.Text, message.Sticker, message.SentAt.Format(time.RFC3339Nano), deliveredAt); err != nil {
 		return nil, "", err
+	}
+	if content.ForwardAttachmentID != "" {
+		message.Attachments, err = attachForwardedFileTx(tx, message.ID, fromID, content.ForwardAttachmentID)
+	} else {
+		message.Attachments, err = attachMessageFilesTx(tx, message.ID, fromID, content.AttachmentIDs)
+	}
+	if err != nil {
+		return nil, "", err
+	}
+	if content.StickerAttachmentID != "" {
+		message.StickerAttachment, err = attachStickerTx(tx, message.ID, fromID, content.StickerAttachmentID)
+		if err != nil {
+			return nil, "", err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, "", err
@@ -965,10 +1152,13 @@ func (s *Store) MessageView(viewerID string, message *Message) MessageView {
 	if message.FromID == viewerID && message.ToID != "" && message.DeliveredAt == nil {
 		delivery = "queued"
 	}
-	return MessageView{
-		ID: message.ID, From: from, Text: message.Text,
+	view := MessageView{
+		ID: message.ID, From: from, Text: message.Text, Sticker: message.Sticker,
 		SentAt: message.SentAt.Format(time.RFC3339Nano), Delivery: delivery, System: system,
+		StickerAttachment: message.StickerAttachment, Attachments: message.Attachments,
 	}
+	applyMessageRecallState(&view, viewerID, message)
+	return view
 }
 
 func (s *Store) NameForID(id string) string {
@@ -1200,9 +1390,9 @@ func scanUser(scanner rowScanner) (*databaseUser, error) {
 func scanMessage(scanner rowScanner) (*Message, error) {
 	var message Message
 	var sentAt string
-	var deliveredAt sql.NullString
+	var deliveredAt, recalledAt sql.NullString
 	if err := scanner.Scan(&message.ID, &message.Kind, &message.FromID, &message.ToID, &message.GroupID,
-		&message.Text, &sentAt, &deliveredAt); err != nil {
+		&message.Text, &message.Sticker, &sentAt, &deliveredAt, &recalledAt); err != nil {
 		return nil, err
 	}
 	parsedSentAt, err := time.Parse(time.RFC3339Nano, sentAt)
@@ -1216,6 +1406,13 @@ func scanMessage(scanner rowScanner) (*Message, error) {
 			return nil, err
 		}
 		message.DeliveredAt = &parsedDeliveredAt
+	}
+	if recalledAt.Valid {
+		parsedRecalledAt, err := time.Parse(time.RFC3339Nano, recalledAt.String)
+		if err != nil {
+			return nil, err
+		}
+		message.RecalledAt = &parsedRecalledAt
 	}
 	return &message, nil
 }
@@ -1291,10 +1488,27 @@ func messageView(viewerID string, message *Message, users map[string]*databaseUs
 	if message.FromID == viewerID && message.ToID != "" && message.DeliveredAt == nil {
 		delivery = "queued"
 	}
-	return MessageView{
-		ID: message.ID, From: from, Text: message.Text,
+	view := MessageView{
+		ID: message.ID, From: from, Text: message.Text, Sticker: message.Sticker,
 		SentAt: message.SentAt.Format(time.RFC3339Nano), Delivery: delivery, System: system,
+		StickerAttachment: message.StickerAttachment, Attachments: message.Attachments,
 	}
+	applyMessageRecallState(&view, viewerID, message)
+	return view
+}
+
+func applyMessageRecallState(view *MessageView, viewerID string, message *Message) {
+	if message.RecalledAt != nil {
+		view.Recalled = true
+		view.Text = ""
+		view.Sticker = ""
+		view.StickerAttachment = nil
+		view.Attachments = nil
+		view.Delivery = "sent"
+		return
+	}
+	age := time.Since(message.SentAt)
+	view.CanRecall = message.FromID == viewerID && !view.System && age >= 0 && age <= RecallWindow
 }
 
 func selfView(user *databaseUser) SelfView {

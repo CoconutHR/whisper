@@ -545,16 +545,17 @@ func (s *Store) GroupViewForUser(groupID, userID string, online map[string]bool)
 }
 
 func (s *Store) SendGroupMessage(fromID, groupID, text string) (*Message, []string, error) {
+	return s.SendGroupMessageContent(fromID, groupID, MessageContent{Text: text})
+}
+
+func (s *Store) SendGroupMessageContent(fromID, groupID string, content MessageContent) (*Message, []string, error) {
 	groupID = strings.TrimSpace(groupID)
 	if groupID == "" {
 		groupID = PublicGroupID
 	}
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return nil, nil, errors.New("消息不能为空")
-	}
-	if utf8.RuneCountInString(text) > MaxMessage {
-		return nil, nil, fmt.Errorf("消息不能超过%d个字符", MaxMessage)
+	content, err := normalizeMessageContent(content)
+	if err != nil {
+		return nil, nil, err
 	}
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -576,10 +577,28 @@ func (s *Store) SendGroupMessage(fromID, groupID, text string) (*Message, []stri
 		return nil, nil, ErrGroupMember
 	}
 	now := time.Now()
-	message := &Message{ID: randomID(), Kind: "group", FromID: fromID, GroupID: groupID, Text: text, SentAt: now}
-	if _, err := tx.Exec(`INSERT INTO messages(id, kind, from_id, to_id, group_id, text, sent_at, delivered_at)
-		VALUES (?, 'group', ?, NULL, ?, ?, ?, NULL)`, message.ID, message.FromID, groupID, text, now.Format(time.RFC3339Nano)); err != nil {
+	message := &Message{
+		ID: randomID(), Kind: "group", FromID: fromID, GroupID: groupID,
+		Text: content.Text, Sticker: content.Sticker, SentAt: now,
+	}
+	if _, err := tx.Exec(`INSERT INTO messages(id, kind, from_id, to_id, group_id, text, sticker, sent_at, delivered_at)
+		VALUES (?, 'group', ?, NULL, ?, ?, ?, ?, NULL)`, message.ID, message.FromID, groupID,
+		message.Text, message.Sticker, now.Format(time.RFC3339Nano)); err != nil {
 		return nil, nil, err
+	}
+	if content.ForwardAttachmentID != "" {
+		message.Attachments, err = attachForwardedFileTx(tx, message.ID, fromID, content.ForwardAttachmentID)
+	} else {
+		message.Attachments, err = attachMessageFilesTx(tx, message.ID, fromID, content.AttachmentIDs)
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	if content.StickerAttachmentID != "" {
+		message.StickerAttachment, err = attachStickerTx(tx, message.ID, fromID, content.StickerAttachmentID)
+		if err != nil {
+			return nil, nil, err
+		}
 	}
 	ids, err := groupMemberIDsTx(tx, groupID)
 	if err != nil {

@@ -15,14 +15,16 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"whisper/internal/blob"
 	"whisper/internal/chat"
 )
 
 const sessionCookie = "whisper_session"
 
 type Config struct {
-	Address   string
-	StaticDir string
+	Address     string
+	StaticDir   string
+	ObjectStore blob.Store
 }
 
 type Server struct {
@@ -32,11 +34,13 @@ type Server struct {
 	instanceID string
 	logger     *slog.Logger
 	upgrader   websocket.Upgrader
+	objects    blob.Store
 }
 
 func NewServer(config Config, store *chat.Store, logger *slog.Logger) *Server {
 	server := &Server{
 		config: config, store: store, hub: newHub(), instanceID: randomToken(), logger: logger,
+		objects: config.ObjectStore,
 	}
 	server.upgrader = websocket.Upgrader{
 		ReadBufferSize:  4096,
@@ -49,6 +53,9 @@ func NewServer(config Config, store *chat.Store, logger *slog.Logger) *Server {
 			parsed, err := url.Parse(origin)
 			return err == nil && parsed.Host == r.Host
 		},
+	}
+	if server.objects != nil {
+		go server.cleanupExpiredAttachmentDrafts()
 	}
 	return server
 }
@@ -70,6 +77,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/groups/transfer", s.requireAuth(s.handleGroupTransfer))
 	mux.HandleFunc("/api/groups/leave", s.requireAuth(s.handleGroupLeave))
 	mux.HandleFunc("/api/groups/dissolve", s.requireAuth(s.handleGroupDissolve))
+	mux.HandleFunc("/api/attachments/presign", s.requireAuth(s.handleAttachmentPresign))
+	mux.HandleFunc("/api/attachments/complete", s.requireAuth(s.handleAttachmentComplete))
+	mux.HandleFunc("/api/attachments/", s.requireAuth(s.handleAttachmentItem))
+	mux.HandleFunc("/api/stickers", s.requireAuth(s.handleStickers))
+	mux.HandleFunc("/api/stickers/favorite", s.requireAuth(s.handleStickerFavorite))
+	mux.HandleFunc("/api/stickers/", s.requireAuth(s.handleStickerItem))
 	mux.HandleFunc("/ws", s.requireAuth(s.handleWebSocket))
 	mux.HandleFunc("/", s.handleStatic)
 	return s.securityHeaders(mux)
@@ -157,6 +170,7 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request, userID 
 		return
 	}
 	bootstrap.ServerInstance = s.instanceID
+	bootstrap.UploadsEnabled = s.objects != nil
 	writeJSON(w, http.StatusOK, bootstrap)
 }
 
@@ -312,37 +326,55 @@ func (s *Server) readPump(client *socketClient) {
 	})
 	for {
 		var command struct {
-			Type  string `json:"type"`
-			Scope string `json:"scope"`
-			To    string `json:"to"`
-			Text  string `json:"text"`
+			Type          string   `json:"type"`
+			RequestID     string   `json:"requestId"`
+			Scope         string   `json:"scope"`
+			To            string   `json:"to"`
+			Text          string   `json:"text"`
+			Sticker       string   `json:"sticker"`
+			StickerAsset  string   `json:"stickerAttachmentId"`
+			ForwardAsset  string   `json:"forwardAttachmentId"`
+			MessageID     string   `json:"messageId"`
+			AttachmentIDs []string `json:"attachmentIds"`
 		}
 		if err := client.conn.ReadJSON(&command); err != nil {
 			return
 		}
+		if command.Type == "recall" {
+			s.handleRecallCommand(client.userID, command.RequestID, command.MessageID)
+			continue
+		}
 		if command.Type != "message" {
 			continue
+		}
+		content := chat.MessageContent{
+			Text: command.Text, Sticker: command.Sticker, StickerAttachmentID: command.StickerAsset,
+			ForwardAttachmentID: command.ForwardAsset, AttachmentIDs: command.AttachmentIDs,
 		}
 		if command.Scope == "group" {
 			groupID := command.To
 			if groupID == "" {
 				groupID = chat.PublicGroupID
 			}
-			message, memberIDs, err := s.store.SendGroupMessage(client.userID, groupID, command.Text)
+			message, memberIDs, err := s.store.SendGroupMessageContent(client.userID, groupID, content)
 			if err != nil {
-				s.hub.sendTo(client.userID, map[string]any{"type": "error", "message": err.Error()})
+				s.hub.sendTo(client.userID, map[string]any{
+					"type": "error", "requestId": command.RequestID, "message": err.Error(),
+				})
 				continue
 			}
-			s.dispatchGroupMessage(groupID, memberIDs, message)
+			s.dispatchGroupMessage(client.userID, groupID, memberIDs, message, command.RequestID)
 			continue
 		}
 		targetID := s.store.IDForName(command.To)
-		message, targetID, err := s.store.SendMessage(client.userID, command.Scope, command.To, command.Text, s.hub.isOnline(targetID))
+		message, targetID, err := s.store.SendMessageContent(client.userID, command.Scope, command.To, content, s.hub.isOnline(targetID))
 		if err != nil {
-			s.hub.sendTo(client.userID, map[string]any{"type": "error", "message": err.Error()})
+			s.hub.sendTo(client.userID, map[string]any{
+				"type": "error", "requestId": command.RequestID, "message": err.Error(),
+			})
 			continue
 		}
-		s.dispatchMessage(client.userID, targetID, command.To, message)
+		s.dispatchMessage(client.userID, targetID, command.To, message, command.RequestID)
 	}
 }
 
@@ -369,11 +401,15 @@ func (s *Server) writePump(client *socketClient) {
 	}
 }
 
-func (s *Server) dispatchMessage(senderID, targetID, targetName string, message *chat.Message) {
-	s.hub.sendTo(senderID, map[string]any{
+func (s *Server) dispatchMessage(senderID, targetID, targetName string, message *chat.Message, requestID string) {
+	senderEvent := map[string]any{
 		"type": "message", "conversation": "dm:" + targetName,
 		"friend": targetName, "message": s.store.MessageView(senderID, message),
-	})
+	}
+	if requestID != "" {
+		senderEvent["requestId"] = requestID
+	}
+	s.hub.sendTo(senderID, senderEvent)
 	if targetID == chat.CocoID {
 		return
 	}
@@ -384,12 +420,16 @@ func (s *Server) dispatchMessage(senderID, targetID, targetName string, message 
 	})
 }
 
-func (s *Server) dispatchGroupMessage(groupID string, memberIDs []string, message *chat.Message) {
+func (s *Server) dispatchGroupMessage(senderID, groupID string, memberIDs []string, message *chat.Message, requestID string) {
 	for _, memberID := range memberIDs {
-		s.hub.sendTo(memberID, map[string]any{
+		event := map[string]any{
 			"type": "message", "conversation": chat.GroupConversationKey(groupID),
 			"message": s.store.MessageView(memberID, message),
-		})
+		}
+		if memberID == senderID && requestID != "" {
+			event["requestId"] = requestID
+		}
+		s.hub.sendTo(memberID, event)
 	}
 }
 
@@ -464,7 +504,16 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; connect-src 'self' ws: wss:; style-src 'self'; script-src 'self'; base-uri 'none'; frame-ancestors 'none'")
+		connectSources := "'self' ws: wss:"
+		imageSources := "'self' data: blob:"
+		mediaSources := "'self' blob:"
+		if s.objects != nil {
+			origin := s.objects.UploadOrigin()
+			connectSources += " " + origin
+			imageSources += " " + origin
+			mediaSources += " " + origin
+		}
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; connect-src "+connectSources+"; img-src "+imageSources+"; media-src "+mediaSources+"; style-src 'self'; script-src 'self'; base-uri 'none'; frame-ancestors 'none'")
 		next.ServeHTTP(w, r)
 	})
 }

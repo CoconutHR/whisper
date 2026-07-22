@@ -7,6 +7,151 @@ const DEFAULT_DOCUMENT_TITLE = document.title;
 const NEW_MESSAGE_TITLE = `【新消息】${DEFAULT_DOCUMENT_TITLE}    `;
 const HTTP_PROTOCOLS = new Set(["http:", "https:"]);
 const FRIEND_MESSAGE_COLORS = new Set(["default", "green", "blue", "cyan", "amber", "rose"]);
+const MAX_ATTACHMENT_SIZE = 50 * 1024 * 1024;
+const MAX_ATTACHMENT_TOTAL_SIZE = 100 * 1024 * 1024;
+const MAX_ATTACHMENTS_PER_MESSAGE = 5;
+const MAX_STICKER_SIZE = 10 * 1024 * 1024;
+const EMOJI_BATCH_SIZE = 160;
+const EMOJI_OPTIONS = [
+  "😀", "😃", "😄", "😁", "😆", "😅", "😂", "🤣",
+  "🥲", "🥹", "😊", "😇", "🙂", "🙃", "😉", "😌",
+  "😍", "🥰", "😘", "😗", "😙", "😚", "😋", "😛",
+  "😝", "😜", "🤪", "🤨", "🧐", "🤓", "😎", "🥸",
+  "🤩", "🥳", "🙂‍↕️", "😏", "😒", "🙂‍↔️", "😞", "😔",
+  "😟", "😕", "🙁", "☹️", "😣", "😖", "😫", "😩",
+  "🥺", "😢", "😭", "😤", "😠", "😡", "🤬", "🤯",
+  "😳", "🥵", "🥶", "😱", "😨", "😰", "😥", "😓",
+  "🫣", "🤗", "🫡", "🤔", "🫢", "🤭", "🤫", "🤥",
+  "😶", "😶‍🌫️", "😐", "😑", "😬", "🫨", "🙄", "😯",
+  "😦", "😧", "😮", "😲", "🥱", "😴", "🤤", "😪",
+  "😵", "😵‍💫", "🤐", "🥴", "🤢", "🤮", "🤧", "😷",
+  "🤒", "🤕", "🤑", "🤠", "😈", "👿", "👹", "👺",
+  "🤡", "💩", "👻", "💀", "☠️", "👽", "🤖", "🎃",
+
+  "😺", "😸", "😹", "😻", "😼", "😽", "🙀", "😿",
+  "😾", "🙈", "🙉", "🙊", "💋", "💌", "💘", "💝",
+  "💖", "💗", "💓", "💞", "💕", "💟", "❣️", "💔",
+  "❤️", "🩷", "🧡", "💛", "💚", "💙", "🩵", "💜",
+  "🤎", "🖤", "🩶", "🤍", "❤️‍🔥", "❤️‍🩹", "💯", "💢",
+  "💥", "💫", "💦", "💨", "🕳️", "💬", "👁️‍🗨️", "🗨️",
+
+  "👋", "🤚", "🖐️", "✋", "🖖", "🫱", "🫲", "🫳",
+  "🫴", "👌", "🤌", "🤏", "✌️", "🤞", "🫰", "🤟",
+  "🤘", "🤙", "👈", "👉", "👆", "🖕", "👇", "☝️",
+  "🫵", "👍", "👎", "✊", "👊", "🤛", "🤜", "👏",
+  "🙌", "🫶", "👐", "🤲", "🤝", "🙏", "✍️", "💅",
+  "🤳", "💪", "🦾", "🦿", "🦵", "🦶", "👂", "🦻",
+  "👃", "🧠", "🫀", "🫁", "🦷", "🦴", "👀", "👁️",
+  "👅", "👄", "🫦", "👶", "🧒", "👦", "👧", "🧑",
+  "👱", "👨", "🧔", "👩", "🧓", "👴", "👵", "🙍",
+  "🙎", "🙅", "🙆", "💁", "🙋", "🧏", "🙇", "🤦",
+  "🤷", "👮", "👷", "💂", "🕵️", "👩‍⚕️", "👩‍🎓", "👩‍💻",
+  "👩‍🚀", "🧙", "🧚", "🧛", "🧜", "🧝", "🦸", "🦹",
+
+  "🐶", "🐱", "🐭", "🐹", "🐰", "🦊", "🐻", "🐼",
+  "🐻‍❄️", "🐨", "🐯", "🦁", "🐮", "🐷", "🐸", "🐵",
+  "🐔", "🐧", "🐦", "🐤", "🦆", "🦅", "🦉", "🦇",
+  "🐺", "🐗", "🐴", "🦄", "🐝", "🪲", "🐞", "🦋",
+  "🐌", "🐛", "🪱", "🐜", "🕷️", "🦂", "🐢", "🐍",
+  "🦎", "🦖", "🦕", "🐙", "🦑", "🦐", "🦞", "🦀",
+  "🐡", "🐠", "🐟", "🐬", "🐳", "🦈", "🦭", "🐊",
+  "🐅", "🐆", "🦓", "🦍", "🦧", "🐘", "🦛", "🦏",
+  "🐪", "🦒", "🦘", "🦬", "🐃", "🐂", "🐄", "🐎",
+  "🐖", "🐏", "🦙", "🐐", "🦌", "🐕", "🐈", "🪶",
+  "🌵", "🎄", "🌲", "🌳", "🌴", "🪵", "🌱", "🌿",
+  "☘️", "🍀", "🎍", "🪴", "🎋", "🍃", "🍂", "🍁",
+  "🍄", "🐚", "🪨", "🌾", "💐", "🌷", "🌹", "🥀",
+  "🪻", "🌺", "🌸", "🌼", "🌻", "🌞", "🌝", "🌚",
+  "🌙", "⭐", "🌟", "✨", "⚡", "🔥", "🌈", "☀️",
+  "🌤️", "⛅", "🌧️", "⛈️", "❄️", "☃️", "🌊", "💧",
+
+  "🍏", "🍎", "🍐", "🍊", "🍋", "🍌", "🍉", "🍇",
+  "🍓", "🫐", "🍈", "🍒", "🍑", "🥭", "🍍", "🥥",
+  "🥝", "🍅", "🍆", "🥑", "🥦", "🥬", "🥒", "🌶️",
+  "🫑", "🌽", "🥕", "🫒", "🧄", "🧅", "🥔", "🍠",
+  "🥐", "🥯", "🍞", "🥖", "🥨", "🧀", "🥚", "🍳",
+  "🧈", "🥞", "🧇", "🥓", "🥩", "🍗", "🍖", "🌭",
+  "🍔", "🍟", "🍕", "🫓", "🥪", "🥙", "🧆", "🌮",
+  "🌯", "🫔", "🥗", "🥘", "🫕", "🥫", "🍝", "🍜",
+  "🍲", "🍛", "🍣", "🍱", "🥟", "🦪", "🍤", "🍙",
+  "🍚", "🍘", "🍥", "🥠", "🥮", "🍢", "🍡", "🍧",
+  "🍨", "🍦", "🥧", "🧁", "🍰", "🎂", "🍮", "🍭",
+  "🍬", "🍫", "🍿", "🍩", "🍪", "🌰", "🥜", "🍯",
+  "🥛", "🍼", "🫖", "☕", "🍵", "🧃", "🥤", "🧋",
+  "🍶", "🍺", "🍻", "🥂", "🍷", "🥃", "🍸", "🍹",
+
+  "⚽", "🏀", "🏈", "⚾", "🥎", "🎾", "🏐", "🏉",
+  "🥏", "🎱", "🪀", "🏓", "🏸", "🏒", "🏑", "🥍",
+  "🏏", "🪃", "🥅", "⛳", "🪁", "🏹", "🎣", "🤿",
+  "🥊", "🥋", "🎽", "🛹", "🛼", "🛷", "⛸️", "🥌",
+  "🎿", "⛷️", "🏂", "🏋️", "🤸", "⛹️", "🤺", "🤾",
+  "🏌️", "🏇", "🧘", "🏄", "🏊", "🚣", "🧗", "🚴",
+  "🏆", "🥇", "🥈", "🥉", "🏅", "🎖️", "🎗️", "🎫",
+  "🎪", "🤹", "🎭", "🩰", "🎨", "🎬", "🎤", "🎧",
+  "🎼", "🎹", "🥁", "🪘", "🎷", "🎺", "🪗", "🎸",
+  "🎻", "🎲", "♟️", "🎯", "🎳", "🎮", "🕹️", "🧩",
+
+  "🚗", "🚕", "🚙", "🚌", "🚎", "🏎️", "🚓", "🚑",
+  "🚒", "🚐", "🛻", "🚚", "🚛", "🚜", "🛵", "🏍️",
+  "🚲", "🛴", "🚨", "🚔", "🚍", "🚘", "🚖", "🚡",
+  "🚠", "🚟", "🚃", "🚋", "🚆", "🚄", "🚅", "🚈",
+  "🚂", "🚇", "🚊", "🚉", "✈️", "🛫", "🛬", "🛩️",
+  "💺", "🚁", "🚀", "🛸", "🚢", "⛵", "🚤", "🛥️",
+  "🗺️", "🗿", "🗽", "🗼", "🏰", "🏯", "🏟️", "🎡",
+  "🎢", "🎠", "⛲", "⛱️", "🏖️", "🏝️", "🏜️", "🌋",
+  "⛰️", "🏕️", "⛺", "🛖", "🏠", "🏡", "🏢", "🏥",
+  "🏦", "🏨", "🏪", "🏫", "⛪", "🕌", "🛕", "🌁",
+  "🌃", "🏙️", "🌄", "🌅", "🌆", "🌇", "🌉", "♨️",
+
+  "⌚", "📱", "💻", "⌨️", "🖥️", "🖨️", "🖱️", "💽",
+  "💾", "💿", "📀", "🧮", "🎥", "📷", "📸", "📹",
+  "📺", "📻", "🎙️", "⏱️", "⏰", "⌛", "🔋", "🔌",
+  "💡", "🔦", "🕯️", "🧯", "🛢️", "💸", "💵", "💴",
+  "💶", "💷", "🪙", "💳", "💎", "⚖️", "🧰", "🔧",
+  "🔨", "⚒️", "🛠️", "⛏️", "🪚", "🔩", "⚙️", "🧱",
+  "⛓️", "🧲", "🔫", "💣", "🧨", "🪓", "🔪", "🛡️",
+  "🚬", "⚰️", "🪦", "⚱️", "🏺", "🔮", "📿", "🧿",
+  "💈", "⚗️", "🔭", "🔬", "🩹", "🩺", "💊", "🧪",
+  "💉", "🩸", "🧬", "🦠", "🧹", "🧺", "🧻", "🚽",
+  "🚿", "🛁", "🧼", "🪥", "🪒", "🧽", "🪣", "🧴",
+  "🔑", "🗝️", "🚪", "🪑", "🛋️", "🛏️", "🧸", "🪆",
+  "🖼️", "🪞", "🛍️", "🛒", "🎁", "🎈", "🎏", "🎀",
+  "🪄", "🪅", "🎊", "🎉", "🎎", "🏮", "🎐", "🧧",
+  "✉️", "📩", "📨", "📧", "📥", "📤", "📦", "🏷️",
+  "📪", "📫", "📬", "📭", "📮", "📜", "📃", "📄",
+  "📑", "🧾", "📊", "📈", "📉", "🗒️", "🗓️", "📅",
+  "📆", "🗑️", "📁", "📂", "🗂️", "📰", "📓", "📔",
+  "📒", "📕", "📗", "📘", "📙", "📚", "🔖", "📎",
+  "🖇️", "📐", "📏", "✂️", "🖊️", "🖋️", "✒️", "🖌️",
+  "📝", "✏️", "🔍", "🔎", "🔏", "🔐", "🔒", "🔓",
+
+  "✅", "❌", "❓", "❗", "‼️", "⁉️", "⭕", "🚫",
+  "⛔", "📛", "♻️", "⚠️", "🚸", "🔱", "⚜️", "🔰",
+  "⬆️", "↗️", "➡️", "↘️", "⬇️", "↙️", "⬅️", "↖️",
+  "↕️", "↔️", "🔄", "🔃", "▶️", "⏸️", "⏹️", "⏺️",
+  "⏭️", "⏮️", "⏩", "⏪", "🔀", "🔁", "🔂", "➕",
+  "➖", "➗", "✖️", "🟰", "♾️", "™️", "©️", "®️",
+  "#️⃣", "*️⃣", "0️⃣", "1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣",
+  "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟", "🔴", "🟠", "🟡",
+  "🟢", "🔵", "🟣", "🟤", "⚫", "⚪", "🟥", "🟧",
+  "🟨", "🟩", "🟦", "🟪", "🟫", "⬛", "⬜", "🔈",
+  "🔉", "🔊", "🔇", "📢", "📣", "🔔", "🔕", "🎵",
+
+  "🏁", "🚩", "🏳️", "🏴", "🏳️‍🌈", "🏳️‍⚧️", "🇨🇳", "🇭🇰",
+  "🇲🇴", "🇯🇵", "🇰🇷", "🇸🇬", "🇺🇸", "🇨🇦",
+  "🇬🇧", "🇫🇷", "🇩🇪", "🇮🇹", "🇪🇸", "🇵🇹", "🇳🇱", "🇨🇭",
+  "🇸🇪", "🇳🇴", "🇫🇮", "🇩🇰", "🇮🇸", "🇦🇺", "🇳🇿", "🇮🇳",
+  "🇹🇭", "🇻🇳", "🇵🇭", "🇮🇩", "🇲🇾", "🇧🇷", "🇦🇷", "🇲🇽",
+  "🇿🇦", "🇪🇬", "🇦🇪", "🇸🇦", "🇹🇷", "🇬🇷", "🇺🇦", "🇺🇳"
+];
+const LEGACY_STICKERS = [
+  { id: "bright-day", visual: "🌞", label: "元气满满" },
+  { id: "great-job", visual: "🙌", label: "太棒了" },
+  { id: "got-it", visual: "👌", label: "收到" },
+  { id: "keep-going", visual: "💪", label: "继续加油" },
+  { id: "many-thanks", visual: "🫶", label: "非常感谢" },
+  { id: "wow-moment", visual: "🤯", label: "震惊" }
+];
 const STORAGE_KEY_MIGRATIONS = [
   ["tmpchat-profile-name", "whisper-profile-name"],
   ["tmpchat-profile-signature", "whisper-profile-signature"],
@@ -97,6 +242,9 @@ const state = {
   friendMenuMember: null,
   groupMenuOpen: false,
   editingGroupId: null,
+  uploadsEnabled: false,
+  stickers: [],
+  attachmentDrafts: [],
   friends: new Set([RESERVED_NICKNAME]),
   friendColors: loadStoredFriendColors(),
   unreadCounts: new Map(),
@@ -145,6 +293,17 @@ const state = {
 const nudgeTimers = new Map();
 let titleScrollTimer = null;
 let titleScrollOffset = 0;
+let composerSending = false;
+let renderedEmojiCount = 0;
+let pageAttentionActive = !document.hidden;
+const pendingMessageSends = new Map();
+let mediaMenuContext = null;
+let forwardAttachment = null;
+let imageViewerItems = [];
+let imageViewerIndex = 0;
+let imageViewerScale = 1;
+let imageViewerOffsetX = 0;
+let imageViewerOffsetY = 0;
 
 function persistDemoFriendColors() {
   localStorage.setItem(
@@ -173,6 +332,19 @@ const backToGroupEl = document.querySelector("#back-to-group");
 const conversationListEl = document.querySelector("#conversation-list");
 const formEl = document.querySelector("#chatform");
 const inputEl = document.querySelector("#chatinput");
+const contentPickerToggleEl = document.querySelector("#content-picker-toggle");
+const contentPickerEl = document.querySelector("#content-picker");
+const pickerTabEls = document.querySelectorAll("[data-picker-tab]");
+const emojiPanelEl = document.querySelector("#emoji-panel");
+const stickerPanelEl = document.querySelector("#sticker-panel");
+const filePanelEl = document.querySelector("#file-panel");
+const chooseFilesEl = document.querySelector("#choose-files");
+const filePanelStatusEl = document.querySelector("#file-panel-status");
+const attachmentFileInputEl = document.querySelector("#attachment-file-input");
+const stickerFileInputEl = document.querySelector("#sticker-file-input");
+const attachmentDraftsEl = document.querySelector("#attachment-drafts");
+const composerStatusEl = document.querySelector("#composer-status");
+const sendMessageEl = document.querySelector("#send-message");
 const sidebarEl = document.querySelector("#sidebar");
 const sidebarContentEl = document.querySelector("#sidebar-content");
 const sidebarToggleEl = document.querySelector("#sidebar-toggle");
@@ -189,6 +361,23 @@ const friendColorButtons = document.querySelectorAll("[data-friend-color]");
 const friendColorStatusEl = document.querySelector("#friend-color-status");
 const clearFriendMessagesEl = document.querySelector("#clear-friend-messages");
 const deleteFriendEl = document.querySelector("#delete-friend");
+const mediaMenuEl = document.querySelector("#media-menu");
+const forwardDialogEl = document.querySelector("#forward-dialog");
+const forwardCloseEl = document.querySelector("#forward-close");
+const forwardTargetsEl = document.querySelector("#forward-targets");
+const forwardStatusEl = document.querySelector("#forward-status");
+const imageViewerEl = document.querySelector("#image-viewer");
+const imageViewerImageEl = document.querySelector("#image-viewer-image");
+const imageViewerStageEl = document.querySelector("#image-viewer-stage");
+const imageViewerCountEl = document.querySelector("#image-viewer-count");
+const imageViewerCaptionEl = document.querySelector("#image-viewer-caption");
+const imageViewerPreviousEl = document.querySelector("#image-viewer-previous");
+const imageViewerNextEl = document.querySelector("#image-viewer-next");
+const imageViewerCloseEl = document.querySelector("#image-viewer-close");
+const imageViewerDownloadEl = document.querySelector("#image-viewer-download");
+const imageZoomOutEl = document.querySelector("#image-zoom-out");
+const imageZoomResetEl = document.querySelector("#image-zoom-reset");
+const imageZoomInEl = document.querySelector("#image-zoom-in");
 
 const profileFormEl = document.querySelector("#profile-form");
 const profileNameEl = document.querySelector("#profile-name");
@@ -318,6 +507,17 @@ function clearConversationUnread(conversationId) {
   state.unreadCounts.delete(conversationId);
   stopConversationNudge(conversationId);
   updateDocumentTitle();
+}
+
+function setPageAttentionActive(active) {
+  pageAttentionActive = active;
+  if (!active || unreadCountFor(state.currentConversation) === 0) return;
+  clearConversationUnread(state.currentConversation);
+  renderConversationNavigation();
+}
+
+function shouldMarkConversationUnread(conversationId) {
+  return state.currentConversation !== conversationId || !pageAttentionActive;
 }
 
 function resetUnreadState() {
@@ -465,6 +665,222 @@ function appendFormattedText(container, value) {
   });
 }
 
+function stickerById(id) {
+  return LEGACY_STICKERS.find((sticker) => sticker.id === id) || null;
+}
+
+function formatFileSize(size) {
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function previewableImageType(contentType) {
+  return ["image/gif", "image/jpeg", "image/png", "image/webp"].includes(contentType);
+}
+
+function currentAttachmentDrafts() {
+  return state.attachmentDrafts.filter((draft) => draft.conversationId === state.currentConversation);
+}
+
+function setComposerStatus(message = "") {
+  composerStatusEl.textContent = message;
+  composerStatusEl.hidden = !message;
+}
+
+function draftStatusText(draft) {
+  if (draft.status === "uploading") return "上传中...";
+  if (draft.status === "ready") return "准备发送";
+  if (draft.status === "error") return draft.error || "上传失败";
+  return formatFileSize(draft.file.size);
+}
+
+function renderAttachmentDrafts() {
+  attachmentDraftsEl.replaceChildren();
+  const drafts = currentAttachmentDrafts();
+  attachmentDraftsEl.hidden = drafts.length === 0;
+
+  drafts.forEach((draft) => {
+    const card = document.createElement("div");
+    card.className = "attachment-draft";
+    card.classList.toggle("error", draft.status === "error");
+
+    let visual;
+    if (draft.previewUrl) {
+      visual = document.createElement("img");
+      visual.className = "attachment-draft-preview";
+      visual.src = draft.previewUrl;
+      visual.alt = "";
+    } else {
+      visual = document.createElement("span");
+      visual.className = "attachment-draft-icon";
+      visual.textContent = "↥";
+      visual.setAttribute("aria-hidden", "true");
+    }
+
+    const name = document.createElement("span");
+    name.className = "attachment-draft-name";
+    name.textContent = draft.file.name;
+    name.title = draft.file.name;
+
+    const status = document.createElement("span");
+    status.className = "attachment-draft-status";
+    status.textContent = draftStatusText(draft);
+
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "attachment-draft-remove";
+    remove.textContent = "×";
+    remove.disabled = draft.status === "uploading";
+    remove.setAttribute("aria-label", `移除文件${draft.file.name}`);
+    remove.addEventListener("click", () => { void removeAttachmentDraft(draft); });
+
+    card.append(visual, name, status, remove);
+    attachmentDraftsEl.append(card);
+  });
+}
+
+async function removeAttachmentDraft(draft) {
+  if (draft.status === "uploading") return;
+  if (draft.attachmentId && backendEnabled) {
+    try {
+      await apiRequest(`/api/attachments/${draft.attachmentId}`, { method: "DELETE" });
+    } catch (error) {
+      setComposerStatus(error.message);
+      return;
+    }
+  }
+  if (draft.previewUrl) URL.revokeObjectURL(draft.previewUrl);
+  state.attachmentDrafts = state.attachmentDrafts.filter((candidate) => candidate !== draft);
+  setComposerStatus();
+  renderAttachmentDrafts();
+  resizeInput();
+}
+
+function addAttachmentFiles(files) {
+  const drafts = currentAttachmentDrafts();
+  const selected = Array.from(files);
+  if (drafts.length + selected.length > MAX_ATTACHMENTS_PER_MESSAGE) {
+    setComposerStatus(`每条消息最多添加${MAX_ATTACHMENTS_PER_MESSAGE}个文件`);
+    return;
+  }
+  let totalSize = drafts.reduce((total, draft) => total + draft.file.size, 0);
+  for (const file of selected) {
+    if (file.size <= 0) {
+      setComposerStatus(`${file.name} 是空文件`);
+      return;
+    }
+    if (file.size > MAX_ATTACHMENT_SIZE) {
+      setComposerStatus(`${file.name} 超过50 MB`);
+      return;
+    }
+    totalSize += file.size;
+    if (totalSize > MAX_ATTACHMENT_TOTAL_SIZE) {
+      setComposerStatus("每条消息的文件总大小不能超过100 MB");
+      return;
+    }
+  }
+  selected.forEach((file) => {
+    state.attachmentDrafts.push({
+      conversationId: state.currentConversation,
+      file,
+      status: "selected",
+      attachmentId: "",
+      previewUrl: previewableImageType(file.type) ? URL.createObjectURL(file) : "",
+      error: ""
+    });
+  });
+  setComposerStatus();
+  renderAttachmentDrafts();
+  resizeInput();
+}
+
+function setPickerTab(name, openFileDialog = false) {
+  const panels = { emoji: emojiPanelEl, sticker: stickerPanelEl, file: filePanelEl };
+  Object.entries(panels).forEach(([panelName, panel]) => {
+    panel.hidden = panelName !== name;
+  });
+  pickerTabEls.forEach((tab) => {
+    const selected = tab.dataset.pickerTab === name;
+    tab.classList.toggle("active", selected);
+    tab.setAttribute("aria-selected", String(selected));
+  });
+  if (name === "file" && openFileDialog && state.uploadsEnabled) attachmentFileInputEl.click();
+}
+
+function setContentPicker(open) {
+  contentPickerEl.hidden = !open;
+  contentPickerToggleEl.setAttribute("aria-expanded", String(open));
+  if (open) setPickerTab("emoji");
+}
+
+function insertEmoji(emoji) {
+  const start = inputEl.selectionStart ?? inputEl.value.length;
+  const end = inputEl.selectionEnd ?? start;
+  inputEl.setRangeText(emoji, start, end, "end");
+  inputEl.dispatchEvent(new Event("input", { bubbles: true }));
+  inputEl.focus();
+}
+
+function appendEmojiOptions() {
+  const nextEmojiCount = Math.min(renderedEmojiCount + EMOJI_BATCH_SIZE, EMOJI_OPTIONS.length);
+  EMOJI_OPTIONS.slice(renderedEmojiCount, nextEmojiCount).forEach((emoji) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "emoji-option";
+    button.textContent = emoji;
+    button.setAttribute("aria-label", `插入${emoji}`);
+    button.addEventListener("click", () => insertEmoji(emoji));
+    emojiPanelEl.append(button);
+  });
+  renderedEmojiCount = nextEmojiCount;
+}
+
+function renderContentPickerOptions() {
+  emojiPanelEl.replaceChildren();
+  renderedEmojiCount = 0;
+  appendEmojiOptions();
+
+  stickerPanelEl.replaceChildren();
+  const addButton = document.createElement("button");
+  addButton.type = "button";
+  addButton.className = "sticker-option sticker-add";
+  addButton.setAttribute("aria-label", "添加表情包");
+  addButton.title = "添加表情包";
+  const addIcon = document.createElement("span");
+  addIcon.className = "sticker-add-icon";
+  addIcon.textContent = "+";
+  addIcon.setAttribute("aria-hidden", "true");
+  addButton.append(addIcon);
+  addButton.addEventListener("click", () => stickerFileInputEl.click());
+  stickerPanelEl.append(addButton);
+
+  state.stickers.forEach((sticker) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "sticker-option";
+    button.setAttribute("aria-label", `发送表情包${sticker.name}`);
+    button.title = sticker.name;
+    const visual = document.createElement("img");
+    visual.className = "sticker-option-image";
+    visual.src = sticker.url;
+    visual.alt = "";
+    button.append(visual);
+    button.addEventListener("click", () => { void sendStickerAttachment(sticker); });
+    bindMediaContextMenu(button, sticker, null, true);
+    stickerPanelEl.append(button);
+  });
+}
+
+function updateUploadControls() {
+  chooseFilesEl.disabled = !state.uploadsEnabled;
+  document.querySelector("#file-tab").disabled = !state.uploadsEnabled;
+  filePanelStatusEl.textContent = state.uploadsEnabled
+    ? `单文件最大50 MB，每条消息最多${MAX_ATTACHMENTS_PER_MESSAGE}个文件`
+    : "服务器尚未配置文件存储";
+  renderContentPickerOptions();
+}
+
 function switchConversation(conversationId) {
   const groupSettingsId = groupIdFromSettings(conversationId);
   const allowedPanel = conversationId === "self" || conversationId === "group-create"
@@ -474,6 +890,9 @@ function switchConversation(conversationId) {
   clearConversationUnread(conversationId);
   state.currentConversation = conversationId;
   inputEl.value = "";
+  setContentPicker(false);
+  setComposerStatus();
+  renderAttachmentDrafts();
   resizeInput();
   hideFriendMenu();
   hideGroupMenu();
@@ -620,6 +1039,237 @@ function createMessageMeta(message, canMention) {
   return meta;
 }
 
+function normalizedAttachmentKind(attachment) {
+  if (attachment.kind) return attachment.kind;
+  if (previewableImageType(attachment.contentType)) return "image";
+  if (["video/mp4", "video/webm", "video/ogg"].includes(attachment.contentType)) return "video";
+  return "file";
+}
+
+function openAttachmentDownload(attachment) {
+  window.open(`${attachment.url}?download=1`, "_blank", "noopener,noreferrer");
+}
+
+function createMediaMoreButton(attachment, message, collectedSticker = false) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "media-more-button";
+  button.textContent = "⋮";
+  button.setAttribute("aria-label", `${attachment.name}的更多操作`);
+  button.title = "更多操作";
+  button.addEventListener("click", (event) => {
+    event.stopPropagation();
+    const rect = button.getBoundingClientRect();
+    showMediaMenu(rect.right, rect.bottom + 4, { attachment, message, collectedSticker });
+  });
+  return button;
+}
+
+function bindMediaContextMenu(element, attachment, message, collectedSticker = false) {
+  element.addEventListener("contextmenu", (event) => {
+    event.preventDefault();
+    showMediaMenu(event.clientX, event.clientY, { attachment, message, collectedSticker });
+  });
+  let longPressTimer = null;
+  let longPressTriggered = false;
+  element.addEventListener("pointerdown", (event) => {
+    if (event.pointerType !== "touch") return;
+    longPressTriggered = false;
+    longPressTimer = window.setTimeout(() => {
+      longPressTriggered = true;
+      showMediaMenu(event.clientX, event.clientY, { attachment, message, collectedSticker });
+      longPressTimer = null;
+    }, 550);
+  });
+  ["pointerup", "pointercancel", "pointermove"].forEach((eventName) => {
+    element.addEventListener(eventName, () => {
+      if (longPressTimer !== null) window.clearTimeout(longPressTimer);
+      longPressTimer = null;
+    });
+  });
+  element.addEventListener("click", (event) => {
+    if (!longPressTriggered) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    longPressTriggered = false;
+  }, true);
+}
+
+function createInlineImage(attachment, message) {
+  const item = document.createElement("figure");
+  item.className = "message-image";
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "message-image-open";
+  button.setAttribute("aria-label", `查看图片${attachment.name}`);
+  const image = document.createElement("img");
+  image.src = attachment.url;
+  image.alt = attachment.name;
+  image.loading = "lazy";
+  image.decoding = "async";
+  button.append(image);
+  button.addEventListener("click", () => openImageViewer(attachment));
+  const caption = document.createElement("figcaption");
+  const name = document.createElement("span");
+  name.textContent = attachment.name;
+  name.title = attachment.name;
+  caption.append(name, createMediaMoreButton(attachment, message));
+  item.append(button, caption);
+  bindMediaContextMenu(item, attachment, message);
+  return item;
+}
+
+function formatMediaTime(seconds) {
+  if (!Number.isFinite(seconds) || seconds < 0) return "0:00";
+  const total = Math.floor(seconds);
+  const minutes = Math.floor(total / 60);
+  return `${minutes}:${String(total % 60).padStart(2, "0")}`;
+}
+
+function createVideoPlayer(attachment, message) {
+  const player = document.createElement("div");
+  player.className = "message-video";
+  const video = document.createElement("video");
+  video.src = attachment.url;
+  video.preload = "metadata";
+  video.playsInline = true;
+  video.controls = false;
+  video.setAttribute("aria-label", attachment.name);
+
+  const controls = document.createElement("div");
+  controls.className = "video-controls";
+  const play = document.createElement("button");
+  play.type = "button";
+  play.className = "video-play";
+  play.textContent = "▶";
+  play.setAttribute("aria-label", "播放");
+  play.title = "播放";
+  const timeline = document.createElement("input");
+  timeline.className = "video-timeline";
+  timeline.type = "range";
+  timeline.min = "0";
+  timeline.max = "1000";
+  timeline.value = "0";
+  timeline.setAttribute("aria-label", "播放进度");
+  const time = document.createElement("span");
+  time.className = "video-time";
+  time.textContent = "0:00 / 0:00";
+  const mute = document.createElement("button");
+  mute.type = "button";
+  mute.className = "video-mute";
+  mute.textContent = "♪";
+  mute.setAttribute("aria-label", "静音");
+  mute.title = "静音";
+  const volume = document.createElement("input");
+  volume.className = "video-volume";
+  volume.type = "range";
+  volume.min = "0";
+  volume.max = "1";
+  volume.step = "0.05";
+  volume.value = "1";
+  volume.setAttribute("aria-label", "音量");
+  const fullscreen = document.createElement("button");
+  fullscreen.type = "button";
+  fullscreen.className = "video-fullscreen";
+  fullscreen.textContent = "⛶";
+  fullscreen.setAttribute("aria-label", "全屏");
+  fullscreen.title = "全屏";
+  const more = createMediaMoreButton(attachment, message);
+  controls.append(play, timeline, time, mute, volume, fullscreen, more);
+  player.append(video, controls);
+
+  const updatePlaybackState = () => {
+    const playing = !video.paused && !video.ended;
+    play.textContent = playing ? "Ⅱ" : "▶";
+    play.setAttribute("aria-label", playing ? "暂停" : "播放");
+    play.title = playing ? "暂停" : "播放";
+  };
+  const togglePlayback = async () => {
+    if (video.paused || video.ended) {
+      try { await video.play(); } catch (_) {}
+    } else {
+      video.pause();
+    }
+  };
+  play.addEventListener("click", () => { void togglePlayback(); });
+  video.addEventListener("click", () => { void togglePlayback(); });
+  video.addEventListener("play", updatePlaybackState);
+  video.addEventListener("pause", updatePlaybackState);
+  video.addEventListener("ended", updatePlaybackState);
+  video.addEventListener("timeupdate", () => {
+    timeline.value = video.duration ? String(Math.round((video.currentTime / video.duration) * 1000)) : "0";
+    time.textContent = `${formatMediaTime(video.currentTime)} / ${formatMediaTime(video.duration)}`;
+  });
+  video.addEventListener("loadedmetadata", () => {
+    time.textContent = `0:00 / ${formatMediaTime(video.duration)}`;
+  });
+  timeline.addEventListener("input", () => {
+    if (video.duration) video.currentTime = (Number(timeline.value) / 1000) * video.duration;
+  });
+  volume.addEventListener("input", () => {
+    video.volume = Number(volume.value);
+    video.muted = video.volume === 0;
+    mute.textContent = video.muted ? "×" : "♪";
+  });
+  mute.addEventListener("click", () => {
+    video.muted = !video.muted;
+    mute.textContent = video.muted ? "×" : "♪";
+    mute.setAttribute("aria-label", video.muted ? "取消静音" : "静音");
+  });
+  fullscreen.addEventListener("click", () => {
+    if (document.fullscreenElement) void document.exitFullscreen();
+    else if (player.requestFullscreen) void player.requestFullscreen();
+  });
+  bindMediaContextMenu(player, attachment, message);
+  return player;
+}
+
+function createFileCard(attachment, message) {
+  const card = document.createElement("div");
+  card.className = "message-file";
+  const icon = document.createElement("span");
+  icon.className = "message-file-icon";
+  icon.textContent = normalizedAttachmentKind(attachment) === "image" ? "▧" : "↥";
+  icon.setAttribute("aria-hidden", "true");
+  const name = document.createElement("span");
+  name.className = "message-file-name";
+  name.textContent = attachment.name;
+  name.title = attachment.name;
+  const size = document.createElement("span");
+  size.className = "message-file-size";
+  size.textContent = formatFileSize(attachment.size);
+  const actions = document.createElement("span");
+  actions.className = "message-file-actions";
+  if (normalizedAttachmentKind(attachment) === "image") {
+    const preview = document.createElement("button");
+    preview.type = "button";
+    preview.textContent = "⌕";
+    preview.setAttribute("aria-label", `查看图片${attachment.name}`);
+    preview.title = "查看";
+    preview.addEventListener("click", () => openImageViewer(attachment));
+    actions.append(preview);
+  }
+  const download = document.createElement("button");
+  download.type = "button";
+  download.textContent = "↓";
+  download.setAttribute("aria-label", `下载文件${attachment.name}`);
+  download.title = "下载";
+  download.addEventListener("click", () => openAttachmentDownload(attachment));
+  actions.append(download, createMediaMoreButton(attachment, message));
+  card.append(icon, name, size, actions);
+  bindMediaContextMenu(card, attachment, message);
+  return card;
+}
+
+function createMessageAttachment(attachment, message) {
+  const kind = normalizedAttachmentKind(attachment);
+  const inlineImage = attachment.inline === true
+    || (attachment.inline == null && attachment.size <= MAX_STICKER_SIZE);
+  if (kind === "image" && inlineImage) return createInlineImage(attachment, message);
+  if (kind === "video") return createVideoPlayer(attachment, message);
+  return createFileCard(attachment, message);
+}
+
 function renderMessages() {
   messagesEl.replaceChildren();
   const conversationMessages = currentMessages();
@@ -646,22 +1296,72 @@ function renderMessages() {
     const row = document.createElement("div");
     row.className = "message";
 
-    const text = document.createElement("p");
-    text.className = "text";
+    const content = document.createElement("div");
+    content.className = "message-content";
     const friendColor = state.friendColors.get(message.from);
-    if (!message.system && message.from !== state.currentUser && friendColor) {
-      text.dataset.friendColor = friendColor;
+    if (message.recalled) {
+      const recalled = document.createElement("p");
+      recalled.className = "message-recalled";
+      recalled.textContent = "消息已撤回";
+      content.append(recalled);
+    } else if (message.text) {
+      const text = document.createElement("p");
+      text.className = "text";
+      if (!message.system && message.from !== state.currentUser && friendColor) {
+        text.dataset.friendColor = friendColor;
+      }
+      appendFormattedText(text, message.text);
+      content.append(text);
     }
-    appendFormattedText(text, message.text);
+
+    const sticker = stickerById(message.sticker);
+    if (sticker) {
+      const stickerEl = document.createElement("span");
+      stickerEl.className = "message-sticker";
+      stickerEl.textContent = sticker.visual;
+      stickerEl.setAttribute("role", "img");
+      stickerEl.setAttribute("aria-label", sticker.label);
+      content.append(stickerEl);
+    }
+
+    if (!message.recalled && message.stickerAttachment) {
+      const stickerItem = document.createElement("span");
+      stickerItem.className = "message-sticker-item";
+      const stickerOpen = document.createElement("button");
+      stickerOpen.type = "button";
+      stickerOpen.className = "message-sticker-open";
+      stickerOpen.setAttribute("aria-label", `查看表情包${message.stickerAttachment.name}`);
+      const stickerImage = document.createElement("img");
+      stickerImage.className = "message-sticker-image";
+      stickerImage.src = message.stickerAttachment.url;
+      stickerImage.alt = message.stickerAttachment.name;
+      stickerImage.loading = "lazy";
+      stickerImage.decoding = "async";
+      stickerOpen.append(stickerImage);
+      stickerOpen.addEventListener("click", () => openImageViewer(message.stickerAttachment));
+      stickerItem.append(
+        stickerOpen,
+        createMediaMoreButton(message.stickerAttachment, message)
+      );
+      bindMediaContextMenu(stickerItem, message.stickerAttachment, message);
+      content.append(stickerItem);
+    }
+
+    if (!message.recalled && message.attachments?.length) {
+      const attachments = document.createElement("div");
+      attachments.className = "message-attachments";
+      message.attachments.forEach((attachment) => attachments.append(createMessageAttachment(attachment, message)));
+      content.append(attachments);
+    }
 
     if (message.delivery === "queued") {
       const delivery = document.createElement("span");
       delivery.className = "message-delivery";
       delivery.textContent = "待送达";
-      text.append(delivery);
+      content.append(delivery);
     }
 
-    row.append(createMessageMeta(message, canMention), text);
+    row.append(createMessageMeta(message, canMention), content);
     messagesEl.append(row);
   });
 }
@@ -895,42 +1595,324 @@ function renderConversation() {
   renderConversationNavigation();
 }
 
-function sendCurrentMessage() {
-  if (state.currentConversation === "self" || isGroupCreateConversation() || isGroupSettingsConversation()) return;
-  const text = inputEl.value.trim();
-  if (!text) return;
+function setComposerSending(sending) {
+  composerSending = sending;
+  sendMessageEl.disabled = sending;
+  contentPickerToggleEl.disabled = sending;
+  renderAttachmentDrafts();
+}
 
-  const member = currentMember();
-  const group = currentGroup();
-  if (backendEnabled) {
-    if (!socket || socket.readyState !== WebSocket.OPEN) {
-      inputEl.placeholder = "正在重新连接...";
-      return;
+async function uploadAttachmentDraft(draft) {
+  if (draft.status === "ready" && draft.attachmentId) return draft.attachmentId;
+  if (draft.attachmentId) {
+    try {
+      await apiRequest(`/api/attachments/${draft.attachmentId}`, { method: "DELETE" });
+    } catch (_) {}
+    draft.attachmentId = "";
+  }
+  draft.status = "uploading";
+  draft.error = "";
+  renderAttachmentDrafts();
+  try {
+    const contentType = draft.file.type || "application/octet-stream";
+    const presigned = await apiRequest("/api/attachments/presign", {
+      method: "POST",
+      body: { name: draft.file.name, size: draft.file.size, contentType }
+    });
+    draft.attachmentId = presigned.attachmentId;
+    const uploadResponse = await fetch(presigned.uploadUrl, {
+      method: "PUT",
+      headers: presigned.headers,
+      body: draft.file
+    });
+    if (!uploadResponse.ok) throw new Error(`文件上传失败（${uploadResponse.status}）`);
+    await apiRequest("/api/attachments/complete", {
+      method: "POST", body: { attachmentId: draft.attachmentId }
+    });
+    draft.status = "ready";
+    renderAttachmentDrafts();
+    return draft.attachmentId;
+  } catch (error) {
+    draft.status = "error";
+    draft.error = error.message || "上传失败";
+    renderAttachmentDrafts();
+    throw error;
+  }
+}
+
+function setStickerPanelStatus(message = "", error = false) {
+  stickerPanelEl.querySelector(".sticker-panel-status")?.remove();
+  if (!message) return;
+  const status = document.createElement("span");
+  status.className = "picker-panel-status sticker-panel-status";
+  status.classList.toggle("error", error);
+  status.textContent = message;
+  status.setAttribute("role", "status");
+  stickerPanelEl.append(status);
+}
+
+async function addStickerFile(file) {
+  if (!previewableImageType(file.type)) {
+    setStickerPanelStatus("表情包仅支持 GIF、JPEG、PNG 和 WebP", true);
+    return false;
+  }
+  if (file.size <= 0 || file.size > MAX_STICKER_SIZE) {
+    setStickerPanelStatus("表情包文件不能超过10 MB", true);
+    return false;
+  }
+  const draft = { file, status: "selected", attachmentId: "", error: "" };
+  setStickerPanelStatus("正在上传...");
+  try {
+    const attachmentId = await uploadAttachmentDraft(draft);
+    const sticker = await apiRequest("/api/stickers", {
+      method: "POST", body: { attachmentId }
+    });
+    if (!state.stickers.some((item) => item.id === sticker.id)) state.stickers.push(sticker);
+    renderContentPickerOptions();
+    setPickerTab("sticker");
+    setStickerPanelStatus("已添加");
+    return true;
+  } catch (error) {
+    if (draft.attachmentId) {
+      try { await apiRequest(`/api/attachments/${draft.attachmentId}`, { method: "DELETE" }); } catch (_) {}
     }
-    socket.send(JSON.stringify({
-      type: "message",
-      scope: member ? "private" : "group",
-      to: member?.name || group?.id || PUBLIC_GROUP_ID,
-      text
-    }));
-    inputEl.value = "";
-    resizeInput();
+    renderContentPickerOptions();
+    setPickerTab("sticker");
+    setStickerPanelStatus(error.message || "添加失败", true);
+    return false;
+  }
+}
+
+async function addStickerFiles(files) {
+  const selected = Array.from(files);
+  if (selected.length === 0) return;
+  setPickerTab("sticker");
+  if (!state.uploadsEnabled || !backendEnabled) {
+    setStickerPanelStatus("已选择图片，但服务器尚未配置文件存储，暂时无法上传", true);
     return;
   }
+  const remaining = Math.max(0, 120 - state.stickers.length);
+  if (remaining === 0) {
+    setStickerPanelStatus("最多收藏120个表情包", true);
+    return;
+  }
+  const accepted = selected.slice(0, remaining);
+  let added = 0;
+  for (let index = 0; index < accepted.length; index += 1) {
+    setStickerPanelStatus(`正在添加 ${index + 1} / ${accepted.length}...`);
+    if (await addStickerFile(accepted[index])) added += 1;
+  }
+  if (selected.length > accepted.length) {
+    setStickerPanelStatus(`已添加${added}张，表情包总数不能超过120张`, true);
+    return;
+  }
+  setStickerPanelStatus(
+    added === accepted.length ? `已添加${added}张` : `成功添加${added} / ${accepted.length}张`,
+    added !== accepted.length
+  );
+}
 
-  currentMessages().push({
-    from: state.currentUser,
-    text,
-    sentAt: new Date().toISOString(),
-    delivery: member && !member.online ? "queued" : "sent"
+async function favoriteSticker(attachment) {
+  try {
+    const sticker = await apiRequest("/api/stickers/favorite", {
+      method: "POST", body: { attachmentId: attachment.id }
+    });
+    if (!state.stickers.some((item) => item.id === sticker.id)) state.stickers.push(sticker);
+    renderContentPickerOptions();
+    setComposerStatus("已收藏为表情包");
+  } catch (error) {
+    setComposerStatus(error.message || "收藏失败");
+  }
+}
+
+async function removeSticker(attachment) {
+  try {
+    await apiRequest(`/api/stickers/${attachment.id}`, { method: "DELETE" });
+    state.stickers = state.stickers.filter((item) => item.id !== attachment.id);
+    renderContentPickerOptions();
+    setPickerTab("sticker");
+  } catch (error) {
+    setStickerPanelStatus(error.message || "移除失败", true);
+  }
+}
+
+function messageDestination() {
+  const member = currentMember();
+  const group = currentGroup();
+  return {
+    conversationId: state.currentConversation,
+    member,
+    scope: member ? "private" : "group",
+    to: member?.name || group?.id || PUBLIC_GROUP_ID
+  };
+}
+
+function messageRequestID() {
+  if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function sendSocketCommand(command) {
+  if (!socket || socket.readyState !== WebSocket.OPEN) {
+    inputEl.placeholder = "正在重新连接...";
+    throw new Error("连接已断开，请稍后重试");
+  }
+  const requestId = messageRequestID();
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      settlePendingMessage(requestId, new Error("操作确认超时，请检查连接后重试"));
+    }, 15000);
+    pendingMessageSends.set(requestId, { resolve, reject, timer });
+    try {
+      socket.send(JSON.stringify({ ...command, requestId }));
+    } catch (error) {
+      settlePendingMessage(requestId, error);
+    }
   });
+}
 
-  if (member) state.friends.add(member.name);
-  inputEl.value = "";
-  resizeInput();
+function settlePendingMessage(requestID, error = null) {
+  if (!requestID) return;
+  const pending = pendingMessageSends.get(requestID);
+  if (!pending) return;
+  window.clearTimeout(pending.timer);
+  pendingMessageSends.delete(requestID);
+  if (error) pending.reject(error);
+  else pending.resolve();
+}
+
+function rejectPendingMessages(message) {
+  [...pendingMessageSends.keys()].forEach((requestID) => {
+    settlePendingMessage(requestID, new Error(message));
+  });
+}
+
+function sendPreparedMessage(content, destination) {
+  if (backendEnabled) {
+    return sendSocketCommand({
+      type: "message", scope: destination.scope, to: destination.to, ...content
+    });
+  }
+
+  state.conversations[destination.conversationId].push({
+    from: state.currentUser,
+    text: content.text || "",
+    sticker: content.sticker || "",
+    attachments: [],
+    sentAt: new Date().toISOString(),
+    delivery: destination.member && !destination.member.online ? "queued" : "sent"
+  });
+  if (destination.member) state.friends.add(destination.member.name);
   renderMessages();
   renderConversationNavigation();
   window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" });
+  return Promise.resolve();
+}
+
+function clearSentAttachmentDrafts(conversationId) {
+  const sentDrafts = state.attachmentDrafts.filter((draft) => draft.conversationId === conversationId);
+  sentDrafts.forEach((draft) => {
+    if (draft.previewUrl) URL.revokeObjectURL(draft.previewUrl);
+  });
+  state.attachmentDrafts = state.attachmentDrafts.filter((draft) => draft.conversationId !== conversationId);
+  renderAttachmentDrafts();
+}
+
+function clearLocalAttachmentDrafts() {
+  state.attachmentDrafts.forEach((draft) => {
+    if (draft.previewUrl) URL.revokeObjectURL(draft.previewUrl);
+  });
+  state.attachmentDrafts = [];
+  renderAttachmentDrafts();
+}
+
+function reconcileAttachmentDrafts() {
+  const attachedIDs = new Set();
+  Object.values(state.conversations).forEach((messages) => {
+    messages.forEach((message) => {
+      message.attachments?.forEach((attachment) => attachedIDs.add(attachment.id));
+    });
+  });
+  state.attachmentDrafts = state.attachmentDrafts.filter((draft) => {
+    if (!draft.attachmentId || !attachedIDs.has(draft.attachmentId)) return true;
+    if (draft.previewUrl) URL.revokeObjectURL(draft.previewUrl);
+    return false;
+  });
+  renderAttachmentDrafts();
+}
+
+async function sendCurrentMessage() {
+  if (state.currentConversation === "self" || isGroupCreateConversation() || isGroupSettingsConversation()) return;
+  if (composerSending) return;
+  const text = inputEl.value.trim();
+  const drafts = currentAttachmentDrafts();
+  if (!text && drafts.length === 0) return;
+  if (drafts.length > 0 && (!backendEnabled || !state.uploadsEnabled)) {
+    setComposerStatus("服务器尚未配置文件上传");
+    return;
+  }
+
+  const destination = messageDestination();
+  setComposerStatus();
+  setComposerSending(true);
+  try {
+    const attachmentIds = await Promise.all(drafts.map(uploadAttachmentDraft));
+    await sendPreparedMessage({ text, attachmentIds }, destination);
+    inputEl.value = "";
+    clearSentAttachmentDrafts(destination.conversationId);
+    resizeInput();
+  } catch (error) {
+    setComposerStatus(error.message || "发送失败");
+  } finally {
+    setComposerSending(false);
+    inputEl.focus();
+  }
+}
+
+async function sendSticker(stickerID) {
+  if (composerSending) return;
+  const sticker = stickerById(stickerID);
+  if (!sticker || state.currentConversation === "self"
+    || isGroupCreateConversation() || isGroupSettingsConversation()) return;
+  const destination = messageDestination();
+  setComposerSending(true);
+  try {
+    await sendPreparedMessage({ text: "", sticker: stickerID }, destination);
+    setContentPicker(false);
+    setComposerStatus();
+  } catch (error) {
+    setComposerStatus(error.message || "发送失败");
+  } finally {
+    setComposerSending(false);
+    inputEl.focus();
+  }
+}
+
+async function sendStickerAttachment(sticker) {
+  if (composerSending || !backendEnabled) return;
+  if (state.currentConversation === "self"
+    || isGroupCreateConversation() || isGroupSettingsConversation()) return;
+  const destination = messageDestination();
+  setComposerSending(true);
+  try {
+    await sendPreparedMessage({ text: "", stickerAttachmentId: sticker.id }, destination);
+    setContentPicker(false);
+    setComposerStatus();
+  } catch (error) {
+    setComposerStatus(error.message || "发送失败");
+  } finally {
+    setComposerSending(false);
+    inputEl.focus();
+  }
+}
+
+async function recallMessage(message) {
+  if (!backendEnabled || !message?.id || !message.canRecall) return;
+  try {
+    await sendSocketCommand({ type: "recall", messageId: message.id });
+  } catch (error) {
+    setComposerStatus(error.message || "撤回失败");
+  }
 }
 
 function resizeInput() {
@@ -1046,11 +2028,195 @@ function receivePrivateMessage(from, text) {
   });
   state.friends.add(from);
   const conversationId = conversationIdFor(from);
-  if (state.currentConversation !== conversationId || document.hidden) {
+  if (shouldMarkConversationUnread(conversationId)) {
     markConversationUnread(conversationId);
   }
   renderConversationNavigation();
   if (state.currentConversation === conversationId) renderMessages();
+}
+
+function hideMediaMenu() {
+  mediaMenuEl.hidden = true;
+  mediaMenuContext = null;
+}
+
+function showMediaMenu(x, y, context) {
+  hideFriendMenu();
+  hideGroupMenu();
+  mediaMenuContext = context;
+  const { attachment, message, collectedSticker } = context;
+  const kind = normalizedAttachmentKind(attachment);
+  const isCollected = state.stickers.some((sticker) => sticker.id === attachment.id);
+  const availability = {
+    preview: kind === "image",
+    collect: backendEnabled && kind === "image" && !isCollected && !collectedSticker,
+    download: backendEnabled,
+    forward: backendEnabled && Boolean(message?.attachments?.some((item) => item.id === attachment.id)),
+    recall: backendEnabled && Boolean(message?.canRecall),
+    "remove-sticker": backendEnabled && Boolean(collectedSticker)
+  };
+  mediaMenuEl.querySelectorAll("[data-media-action]").forEach((button) => {
+    button.hidden = !availability[button.dataset.mediaAction];
+  });
+  mediaMenuEl.hidden = false;
+  const rect = mediaMenuEl.getBoundingClientRect();
+  mediaMenuEl.style.left = `${Math.max(8, Math.min(x - rect.width, window.innerWidth - rect.width - 8))}px`;
+  mediaMenuEl.style.top = `${Math.max(8, Math.min(y, window.innerHeight - rect.height - 8))}px`;
+}
+
+function imageAttachmentsForCurrentConversation(extraAttachment = null) {
+  const images = [];
+  const seen = new Set();
+  const add = (attachment) => {
+    if (!attachment || normalizedAttachmentKind(attachment) !== "image" || seen.has(attachment.id)) return;
+    seen.add(attachment.id);
+    images.push(attachment);
+  };
+  currentMessages().forEach((message) => {
+    if (message.recalled) return;
+    add(message.stickerAttachment);
+    message.attachments?.forEach(add);
+  });
+  add(extraAttachment);
+  return images;
+}
+
+function applyImageViewerTransform() {
+  imageViewerImageEl.style.transform = `translate(${imageViewerOffsetX}px, ${imageViewerOffsetY}px) scale(${imageViewerScale})`;
+  imageZoomResetEl.textContent = `${Math.round(imageViewerScale * 100)}%`;
+}
+
+function resetImageViewerTransform() {
+  imageViewerScale = 1;
+  imageViewerOffsetX = 0;
+  imageViewerOffsetY = 0;
+  applyImageViewerTransform();
+}
+
+function renderImageViewer() {
+  const attachment = imageViewerItems[imageViewerIndex];
+  if (!attachment) {
+    closeImageViewer();
+    return;
+  }
+  imageViewerImageEl.src = attachment.url;
+  imageViewerImageEl.alt = attachment.name;
+  imageViewerCaptionEl.textContent = `${attachment.name} · ${formatFileSize(attachment.size)}`;
+  imageViewerCountEl.textContent = `${imageViewerIndex + 1} / ${imageViewerItems.length}`;
+  imageViewerPreviousEl.hidden = imageViewerItems.length < 2;
+  imageViewerNextEl.hidden = imageViewerItems.length < 2;
+  resetImageViewerTransform();
+  const previous = imageViewerItems[(imageViewerIndex - 1 + imageViewerItems.length) % imageViewerItems.length];
+  const next = imageViewerItems[(imageViewerIndex + 1) % imageViewerItems.length];
+  [previous, next].forEach((item) => {
+    if (!item || item.id === attachment.id) return;
+    const preload = new Image();
+    preload.src = item.url;
+  });
+}
+
+function openImageViewer(attachment) {
+  imageViewerItems = imageAttachmentsForCurrentConversation(attachment);
+  imageViewerIndex = Math.max(0, imageViewerItems.findIndex((item) => item.id === attachment.id));
+  imageViewerEl.hidden = false;
+  document.body.classList.add("modal-open");
+  renderImageViewer();
+  imageViewerCloseEl.focus();
+}
+
+function closeImageViewer() {
+  imageViewerEl.hidden = true;
+  imageViewerImageEl.removeAttribute("src");
+  imageViewerItems = [];
+  document.body.classList.remove("modal-open");
+}
+
+function moveImageViewer(step) {
+  if (imageViewerItems.length < 2) return;
+  imageViewerIndex = (imageViewerIndex + step + imageViewerItems.length) % imageViewerItems.length;
+  renderImageViewer();
+}
+
+function setImageViewerScale(nextScale) {
+  imageViewerScale = Math.max(0.25, Math.min(5, nextScale));
+  if (imageViewerScale <= 1) {
+    imageViewerOffsetX = 0;
+    imageViewerOffsetY = 0;
+  }
+  applyImageViewerTransform();
+}
+
+function destinationForConversation(conversationId) {
+  if (isGroupConversation(conversationId)) {
+    return {
+      conversationId, member: null, scope: "group", to: groupIdForConversation(conversationId)
+    };
+  }
+  const name = friendNameForConversation(conversationId);
+  return { conversationId, member: memberByName(name), scope: "private", to: name };
+}
+
+function closeForwardDialog() {
+  forwardDialogEl.hidden = true;
+  forwardAttachment = null;
+  forwardTargetsEl.replaceChildren();
+  setFormStatus(forwardStatusEl, "");
+  document.body.classList.remove("modal-open");
+}
+
+function forwardTargets() {
+  const targets = [];
+  [...state.groups.values()]
+    .sort((left, right) => left.name.localeCompare(right.name, "zh-CN"))
+    .forEach((group) => targets.push({
+      conversationId: groupConversationIdFor(group.id), label: `# ${group.name}`,
+      detail: `${group.members.length} 位成员`
+    }));
+  sortedMembers(members).forEach((member) => {
+    targets.push({
+      conversationId: conversationIdFor(member.name), label: `@${member.name}`,
+      detail: member.online ? "在线" : "离线"
+    });
+  });
+  return targets;
+}
+
+function openForwardDialog(attachment) {
+  forwardAttachment = attachment;
+  forwardTargetsEl.replaceChildren();
+  forwardTargets().forEach((target) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "forward-target";
+    const label = document.createElement("strong");
+    label.textContent = target.label;
+    const detail = document.createElement("span");
+    detail.textContent = target.detail;
+    button.append(label, detail);
+    button.addEventListener("click", async () => {
+      if (!forwardAttachment) return;
+      forwardTargetsEl.querySelectorAll("button").forEach((item) => { item.disabled = true; });
+      setFormStatus(forwardStatusEl, "正在转发...");
+      forwardStatusEl.hidden = false;
+      try {
+        await sendPreparedMessage(
+          { text: "", forwardAttachmentId: forwardAttachment.id },
+          destinationForConversation(target.conversationId)
+        );
+        closeForwardDialog();
+        setComposerStatus(`已转发到${target.label}`);
+      } catch (error) {
+        setFormStatus(forwardStatusEl, error.message || "转发失败", true);
+        forwardTargetsEl.querySelectorAll("button").forEach((item) => { item.disabled = false; });
+      }
+    });
+    forwardTargetsEl.append(button);
+  });
+  forwardDialogEl.hidden = false;
+  document.body.classList.add("modal-open");
+  setFormStatus(forwardStatusEl, "");
+  forwardStatusEl.hidden = true;
+  forwardCloseEl.focus();
 }
 
 class ApiError extends Error {
@@ -1082,6 +2248,7 @@ async function apiRequest(path, options = {}) {
 function closeSocket() {
   window.clearTimeout(reconnectTimer);
   reconnectTimer = null;
+  rejectPendingMessages("连接已断开，请稍后重试");
   if (socket) {
     socket.onclose = null;
     socket.close();
@@ -1092,6 +2259,8 @@ function closeSocket() {
 function showAuthUI(message = "") {
   backendAuthenticated = false;
   closeSocket();
+  clearLocalAttachmentDrafts();
+  setContentPicker(false);
   resetUnreadState();
   authPanelEl.hidden = false;
   appMainEl.hidden = true;
@@ -1150,6 +2319,8 @@ function hydrateBootstrap(payload) {
   state.profile.signature = payload.self.signature || "";
   state.currentConversation = PUBLIC_GROUP_CONVERSATION;
   state.friendMenuMember = null;
+  state.uploadsEnabled = Boolean(payload.uploadsEnabled);
+  state.stickers = payload.stickers || [];
   state.friends = new Set(payload.friends || []);
   state.friendColors = new Map(Object.entries(payload.friendColors || {}));
   state.conversations = payload.conversations || { [PUBLIC_GROUP_CONVERSATION]: [], "dm:coco": [] };
@@ -1172,6 +2343,7 @@ function hydrateBootstrap(payload) {
     if (!state.conversations[key]) state.conversations[key] = [];
   });
   if (!state.conversations[PUBLIC_GROUP_CONVERSATION]) state.conversations[PUBLIC_GROUP_CONVERSATION] = [];
+  reconcileAttachmentDrafts();
 
   showMessageTimeEl.checked = payload.self.settings.showMessageTime;
   fullMessageTimeEl.checked = payload.self.settings.fullMessageTime;
@@ -1180,6 +2352,7 @@ function hydrateBootstrap(payload) {
   document.body.dataset.theme = schemeSelectorEl.value;
   profileNameEl.value = state.currentUser;
   profileSignatureInputEl.value = state.profile.signature;
+  updateUploadControls();
 }
 
 function renameRemoteMember(previousName, memberView) {
@@ -1223,6 +2396,7 @@ function renameRemoteMember(previousName, memberView) {
 
 function handleSocketEvent(event) {
   if (event.type === "message") {
+    settlePendingMessage(event.requestId);
     if (!state.conversations[event.conversation]) state.conversations[event.conversation] = [];
     const messages = state.conversations[event.conversation];
     const isNewMessage = !messages.some((message) => message.id === event.message.id);
@@ -1235,15 +2409,38 @@ function handleSocketEvent(event) {
     if (event.friend) state.friends.add(event.friend);
     if (isIncomingPrivateMessage) state.friends.add(event.friend || conversationFriend);
     if (isNewMessage && isIncomingPrivateMessage
-      && (state.currentConversation !== event.conversation || document.hidden)) {
+      && shouldMarkConversationUnread(event.conversation)) {
       markConversationUnread(event.conversation);
     }
     if (isNewMessage && isIncomingGroupMessage
-      && (state.currentConversation !== event.conversation || document.hidden)) {
+      && shouldMarkConversationUnread(event.conversation)) {
       markConversationUnread(event.conversation);
     }
     if (state.currentConversation === event.conversation) renderMessages();
     renderConversationNavigation();
+    return;
+  }
+
+  if (event.type === "message_recalled") {
+    settlePendingMessage(event.requestId);
+    const messages = state.conversations[event.conversation] || [];
+    const message = messages.find((candidate) => candidate.id === event.messageId);
+    if (message) {
+      message.recalled = true;
+      message.canRecall = false;
+      message.text = "";
+      message.sticker = "";
+      message.stickerAttachment = null;
+      message.attachments = [];
+    }
+    if (state.currentConversation === event.conversation) renderMessages();
+    return;
+  }
+
+  if (event.type === "error") {
+    const error = new Error(event.message || "发送失败");
+    if (event.requestId) settlePendingMessage(event.requestId, error);
+    else setComposerStatus(error.message);
     return;
   }
 
@@ -1299,6 +2496,7 @@ function connectSocket() {
   };
   socket.onclose = () => {
     socket = null;
+    rejectPendingMessages("连接已断开，请稍后重试");
     if (!backendAuthenticated) return;
     reconnectTimer = window.setTimeout(async () => {
       try {
@@ -1384,9 +2582,106 @@ authFormEl.addEventListener("submit", async (event) => {
 
 formEl.addEventListener("submit", (event) => {
   event.preventDefault();
-  sendCurrentMessage();
+  void sendCurrentMessage();
+});
+
+contentPickerToggleEl.addEventListener("click", (event) => {
+  event.stopPropagation();
+  setContentPicker(contentPickerEl.hidden);
+});
+
+emojiPanelEl.addEventListener("scroll", () => {
+  const nearBottom = emojiPanelEl.scrollTop + emojiPanelEl.clientHeight
+    >= emojiPanelEl.scrollHeight - 96;
+  if (nearBottom && renderedEmojiCount < EMOJI_OPTIONS.length) appendEmojiOptions();
+});
+
+pickerTabEls.forEach((tab) => {
+  tab.addEventListener("click", () => {
+    setPickerTab(tab.dataset.pickerTab, tab.dataset.pickerTab === "file");
+  });
+});
+
+chooseFilesEl.addEventListener("click", () => {
+  if (state.uploadsEnabled) attachmentFileInputEl.click();
+});
+
+attachmentFileInputEl.addEventListener("change", () => {
+  if (attachmentFileInputEl.files?.length) addAttachmentFiles(attachmentFileInputEl.files);
+  attachmentFileInputEl.value = "";
+  setContentPicker(false);
   inputEl.focus();
 });
+
+stickerFileInputEl.addEventListener("change", () => {
+  const files = stickerFileInputEl.files ? Array.from(stickerFileInputEl.files) : [];
+  stickerFileInputEl.value = "";
+  if (files.length) void addStickerFiles(files);
+});
+
+mediaMenuEl.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-media-action]");
+  if (!button || !mediaMenuContext) return;
+  const context = mediaMenuContext;
+  const action = button.dataset.mediaAction;
+  hideMediaMenu();
+  if (action === "preview") openImageViewer(context.attachment);
+  else if (action === "collect") void favoriteSticker(context.attachment);
+  else if (action === "download") openAttachmentDownload(context.attachment);
+  else if (action === "forward") openForwardDialog(context.attachment);
+  else if (action === "recall") void recallMessage(context.message);
+  else if (action === "remove-sticker") void removeSticker(context.attachment);
+});
+
+forwardCloseEl.addEventListener("click", closeForwardDialog);
+forwardDialogEl.addEventListener("click", (event) => {
+  if (event.target === forwardDialogEl) closeForwardDialog();
+});
+
+imageViewerCloseEl.addEventListener("click", closeImageViewer);
+imageViewerPreviousEl.addEventListener("click", () => moveImageViewer(-1));
+imageViewerNextEl.addEventListener("click", () => moveImageViewer(1));
+imageZoomOutEl.addEventListener("click", () => setImageViewerScale(imageViewerScale / 1.25));
+imageZoomInEl.addEventListener("click", () => setImageViewerScale(imageViewerScale * 1.25));
+imageZoomResetEl.addEventListener("click", resetImageViewerTransform);
+imageViewerDownloadEl.addEventListener("click", () => {
+  const attachment = imageViewerItems[imageViewerIndex];
+  if (attachment) openAttachmentDownload(attachment);
+});
+imageViewerStageEl.addEventListener("wheel", (event) => {
+  event.preventDefault();
+  setImageViewerScale(imageViewerScale * (event.deltaY < 0 ? 1.15 : 1 / 1.15));
+}, { passive: false });
+imageViewerImageEl.addEventListener("dblclick", resetImageViewerTransform);
+
+let imageDragPointer = null;
+let imageDragStartX = 0;
+let imageDragStartY = 0;
+let imageDragOriginX = 0;
+let imageDragOriginY = 0;
+imageViewerImageEl.addEventListener("pointerdown", (event) => {
+  if (imageViewerScale <= 1) return;
+  imageDragPointer = event.pointerId;
+  imageDragStartX = event.clientX;
+  imageDragStartY = event.clientY;
+  imageDragOriginX = imageViewerOffsetX;
+  imageDragOriginY = imageViewerOffsetY;
+  imageViewerImageEl.setPointerCapture(event.pointerId);
+  imageViewerImageEl.classList.add("dragging");
+});
+imageViewerImageEl.addEventListener("pointermove", (event) => {
+  if (imageDragPointer !== event.pointerId) return;
+  imageViewerOffsetX = imageDragOriginX + event.clientX - imageDragStartX;
+  imageViewerOffsetY = imageDragOriginY + event.clientY - imageDragStartY;
+  applyImageViewerTransform();
+});
+const stopImageDrag = (event) => {
+  if (imageDragPointer !== event.pointerId) return;
+  imageDragPointer = null;
+  imageViewerImageEl.classList.remove("dragging");
+};
+imageViewerImageEl.addEventListener("pointerup", stopImageDrag);
+imageViewerImageEl.addEventListener("pointercancel", stopImageDrag);
 
 let messageInputComposing = false;
 
@@ -1406,7 +2701,7 @@ inputEl.addEventListener("keydown", (event) => {
   if (messageInputComposing || event.isComposing || event.keyCode === 229) return;
   if (event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();
-    sendCurrentMessage();
+    void sendCurrentMessage();
   }
 });
 
@@ -1758,21 +3053,50 @@ document.addEventListener("click", (event) => {
   if (!friendMenuEl.hidden && !friendMenuEl.contains(event.target)) hideFriendMenu();
   if (!groupMenuEl.hidden && !groupMenuEl.contains(event.target)
     && event.target !== groupMenuToggleEl) hideGroupMenu();
+  if (!mediaMenuEl.hidden && !mediaMenuEl.contains(event.target)) hideMediaMenu();
+  if (!contentPickerEl.hidden && !contentPickerEl.contains(event.target)
+    && event.target !== contentPickerToggleEl) setContentPicker(false);
 });
 
 document.addEventListener("keydown", (event) => {
+  if (!imageViewerEl.hidden) {
+    if (event.key === "ArrowLeft") moveImageViewer(-1);
+    else if (event.key === "ArrowRight") moveImageViewer(1);
+    else if (event.key === "+" || event.key === "=") setImageViewerScale(imageViewerScale * 1.25);
+    else if (event.key === "-") setImageViewerScale(imageViewerScale / 1.25);
+    else if (event.key === "0") resetImageViewerTransform();
+    else if (event.key === "Escape") closeImageViewer();
+    if (["ArrowLeft", "ArrowRight", "+", "=", "-", "0", "Escape"].includes(event.key)) {
+      event.preventDefault();
+    }
+    return;
+  }
   if (event.key === "Escape") {
+    if (!forwardDialogEl.hidden) closeForwardDialog();
     hideFriendMenu();
     hideGroupMenu();
+    hideMediaMenu();
+    setContentPicker(false);
     setSidebar(false);
   }
 });
 
 document.addEventListener("visibilitychange", () => {
-  if (document.hidden || !state.currentConversation.startsWith("dm:")) return;
-  if (unreadCountFor(state.currentConversation) === 0) return;
-  clearConversationUnread(state.currentConversation);
-  renderConversationNavigation();
+  setPageAttentionActive(!document.hidden);
+});
+
+window.addEventListener("focus", () => setPageAttentionActive(true));
+window.addEventListener("blur", () => setPageAttentionActive(false));
+window.addEventListener("pageshow", () => setPageAttentionActive(true));
+window.addEventListener("pagehide", () => setPageAttentionActive(false));
+document.documentElement.addEventListener("pointerenter", () => setPageAttentionActive(true));
+document.documentElement.addEventListener("pointerleave", () => setPageAttentionActive(false));
+document.addEventListener("pointerdown", () => setPageAttentionActive(true));
+document.addEventListener("touchstart", () => setPageAttentionActive(true), { passive: true });
+document.addEventListener("wheel", () => setPageAttentionActive(true), { passive: true });
+document.addEventListener("keydown", (event) => {
+  const switchingTabs = event.key === "Tab" && (event.ctrlKey || event.metaKey);
+  setPageAttentionActive(!switchingTabs);
 });
 
 const storedTheme = localStorage.getItem("whisper-theme");
@@ -1796,6 +3120,14 @@ pinSidebarEl.checked = localStorage.getItem("whisper-pin-sidebar") === "true";
 showMessageTimeEl.checked = localStorage.getItem("whisper-show-message-time") !== "false";
 fullMessageTimeEl.checked = localStorage.getItem("whisper-full-message-time") === "true";
 parseLatexEl.checked = localStorage.getItem("whisper-parse-latex") !== "false";
+renderContentPickerOptions();
+updateUploadControls();
 setSidebar(pinSidebarEl.checked);
 setAuthMode("login");
+if (typeof ResizeObserver !== "undefined") {
+  const composerObserver = new ResizeObserver(() => {
+    document.documentElement.style.setProperty("--composer-height", `${formEl.offsetHeight}px`);
+  });
+  composerObserver.observe(formEl);
+}
 startApplication();
