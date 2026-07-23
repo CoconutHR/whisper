@@ -124,8 +124,9 @@ sudo journalctl -u whisper -n 50 --no-pager
 - 支持一次继续添加多个文件，发送前可删除；失败卡片保留，可再次发送重试。
 - GIF、JPEG、PNG、WebP 图片不超过 `10 MB` 时直接展示；更大的图片以文件卡片显示，用户主动查看时才加载。
 - 自定义表情包只支持上述四种图片，单张最大 `10 MB`，每位用户最多收藏 `120` 张。
-- MP4、WebM 和 Ogg 视频使用站内播放器，其他类型显示下载卡片。
-- 上传和普通下载签名有效期为 `5 分钟`；视频读取签名为 `2 小时`，供播放和 Range 请求持续使用。
+- PDF、TXT、Word、Excel 和 PowerPoint 文件允许通过已鉴权的临时地址内联打开；Office 是否直接预览由浏览器决定，不接入第三方预览服务。
+- MP3、M4A、AAC、WAV、Ogg、WebM、FLAC 音频和 MP4、WebM、Ogg、MOV、M4V 视频使用站内播放器。实际编码不受浏览器支持时自动显示下载卡片。
+- 上传、普通图片和其他下载签名有效期为 `5 分钟`；文档与音视频读取签名为 `2 小时`，供预览和 Range 请求持续使用。用户主动点击下载时仍返回 `attachment` 响应。
 - 未发送草稿超过 `24 小时`后，在服务启动或下一次申请上传时清理 R2 对象和 SQLite 元数据。撤回、解散群聊等操作产生且不再被任何有效消息或个人表情包引用的对象也进入同一可重试清理流程。
 
 这些是耳语自身的产品限制，不是 R2 的单文件硬上限。要修改它们，需要同步调整 `internal/chat/attachments.go` 和 `app.js` 中的限制；只改前端不能绕过服务端校验。
@@ -135,12 +136,12 @@ sudo journalctl -u whisper -n 50 --no-pager
 | 位置 | 改动 | 意义 |
 |---|---|---|
 | `internal/blob` | R2 配置、S3 客户端、PUT/GET 预签名、HEAD 和删除 | 把对象存储封装为可替换接口，密钥仅留在服务端 |
-| `internal/chat/attachments.go` | 附件草稿、绑定、访问权限和大小限制 | 用 SQLite 维护对象归属和消息可见性 |
+| `internal/chat/attachments.go` | 附件草稿、绑定、访问权限、大小限制和 MIME 分类 | 用 SQLite 维护对象归属和消息可见性，并集中定义安全预览白名单 |
 | `internal/chat/store.go` | schema v7、撤回时间与媒体引用表 | 消息、附件、表情包及转发引用在同一事务中提交，旧数据库自动迁移 |
 | `internal/chat/messages.go` | 两分钟撤回事务与接收者计算 | 撤回后同步通知消息当前可见成员 |
-| `internal/web/attachments.go` | 申请、完成、下载、删除 API | 浏览器直传，服务端仍控制对象生命周期和下载权限 |
+| `internal/web/attachments.go` | 申请、完成、预览、下载、删除 API | 浏览器直传，服务端仍控制对象生命周期、响应方式和访问权限 |
 | `internal/web/stickers.go` / `messages.go` | 收藏、移除与撤回接口 | 在服务端执行归属、可见性和时间窗口校验 |
-| `index.html` / `styles.css` / `app.js` | 三栏内容弹层、媒体消息、查看器和自定义播放器 | 完成表情包收藏、图片缩放切换、视频播放、下载、转发和撤回交互 |
+| `index.html` / `styles.css` / `app.js` | 三栏内容弹层、媒体消息、文档入口、查看器和自定义播放器 | 完成表情包收藏、图片查看、文档打开、音视频播放、下载、转发和撤回交互 |
 | `cmd/whisper/main.go` | 读取四项 R2 环境变量 | 未配置时保持原功能，配置完整时自动启用上传 |
 
 服务会自动把私有 R2 S3 Origin 加入页面的 `connect-src`、`img-src` 和 `media-src` CSP。反向代理不需要放宽聊天 API 的请求体限制，因为文件内容不经过 Go 服务或代理，只传少量 JSON 元数据。

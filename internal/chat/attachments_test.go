@@ -20,17 +20,45 @@ func readyAttachment(t *testing.T, store *Store, userID, name, contentType strin
 }
 
 func TestAttachmentViewMediaClassification(t *testing.T) {
-	smallImage := attachmentView(Attachment{ID: "small", Name: "small.png", ContentType: "image/png", Size: InlineImageMaxSize})
-	if smallImage.Kind != "image" || !smallImage.Inline {
-		t.Fatalf("small image view = %#v", smallImage)
+	cases := []struct {
+		contentType string
+		kind        string
+		previewable bool
+		streamable  bool
+	}{
+		{"image/png", "image", true, false},
+		{"video/mp4", "video", true, true},
+		{"video/quicktime", "video", true, true},
+		{"audio/mpeg", "audio", true, true},
+		{"audio/x-m4a", "audio", true, true},
+		{"audio/x-aac", "audio", true, true},
+		{"audio/flac", "audio", true, true},
+		{"audio/x-flac", "audio", true, true},
+		{"application/pdf", "document", true, false},
+		{"application/x-pdf", "document", true, false},
+		{"text/plain; charset=utf-8", "document", true, false},
+		{"application/msword", "document", true, false},
+		{"application/vnd.openxmlformats-officedocument.wordprocessingml.document", "document", true, false},
+		{"application/vnd.ms-excel", "document", true, false},
+		{"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "document", true, false},
+		{"text/html", "file", false, false},
+		{"image/svg+xml", "file", false, false},
+	}
+	for _, testCase := range cases {
+		view := attachmentView(Attachment{ID: "asset", Name: "asset", ContentType: testCase.contentType, Size: 1024})
+		if view.Kind != testCase.kind || view.Inline != (testCase.kind == "image") {
+			t.Errorf("attachmentView(%q) = %#v", testCase.contentType, view)
+		}
+		if got := IsBrowserPreviewableContentType(testCase.contentType); got != testCase.previewable {
+			t.Errorf("IsBrowserPreviewableContentType(%q) = %v", testCase.contentType, got)
+		}
+		if got := IsStreamableMediaContentType(testCase.contentType); got != testCase.streamable {
+			t.Errorf("IsStreamableMediaContentType(%q) = %v", testCase.contentType, got)
+		}
 	}
 	largeImage := attachmentView(Attachment{ID: "large", Name: "large.png", ContentType: "image/png", Size: InlineImageMaxSize + 1})
-	if largeImage.Kind != "image" || largeImage.Inline {
+	if largeImage.Inline {
 		t.Fatalf("large image view = %#v", largeImage)
-	}
-	video := attachmentView(Attachment{ID: "video", Name: "video.mp4", ContentType: "video/mp4", Size: 1024})
-	if video.Kind != "video" || video.Inline {
-		t.Fatalf("video view = %#v", video)
 	}
 }
 

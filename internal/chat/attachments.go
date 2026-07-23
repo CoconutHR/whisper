@@ -44,12 +44,7 @@ type AttachmentView struct {
 }
 
 func attachmentView(attachment Attachment) AttachmentView {
-	kind := "file"
-	if previewableImageContentType(attachment.ContentType) {
-		kind = "image"
-	} else if playableVideoContentType(attachment.ContentType) {
-		kind = "video"
-	}
+	kind := AttachmentKindForContentType(attachment.ContentType)
 	return AttachmentView{
 		ID: attachment.ID, Name: attachment.Name, ContentType: attachment.ContentType,
 		Size: attachment.Size, Kind: kind,
@@ -58,8 +53,45 @@ func attachmentView(attachment Attachment) AttachmentView {
 	}
 }
 
+func baseContentType(contentType string) string {
+	contentType = strings.ToLower(strings.TrimSpace(contentType))
+	if separator := strings.IndexByte(contentType, ';'); separator >= 0 {
+		contentType = contentType[:separator]
+	}
+	return strings.TrimSpace(contentType)
+}
+
+func AttachmentKindForContentType(contentType string) string {
+	contentType = baseContentType(contentType)
+	switch {
+	case previewableImageContentType(contentType):
+		return "image"
+	case playableVideoContentType(contentType):
+		return "video"
+	case playableAudioContentType(contentType):
+		return "audio"
+	case browserDocumentContentType(contentType):
+		return "document"
+	default:
+		return "file"
+	}
+}
+
+func IsBrowserPreviewableContentType(contentType string) bool {
+	return AttachmentKindForContentType(contentType) != "file"
+}
+
+func IsStreamableMediaContentType(contentType string) bool {
+	kind := AttachmentKindForContentType(contentType)
+	return kind == "audio" || kind == "video"
+}
+
+func IsBrowserDocumentContentType(contentType string) bool {
+	return browserDocumentContentType(baseContentType(contentType))
+}
+
 func previewableImageContentType(contentType string) bool {
-	switch strings.ToLower(contentType) {
+	switch baseContentType(contentType) {
 	case "image/gif", "image/jpeg", "image/png", "image/webp":
 		return true
 	default:
@@ -68,8 +100,32 @@ func previewableImageContentType(contentType string) bool {
 }
 
 func playableVideoContentType(contentType string) bool {
-	switch strings.ToLower(contentType) {
-	case "video/mp4", "video/webm", "video/ogg":
+	switch baseContentType(contentType) {
+	case "video/mp4", "video/webm", "video/ogg", "video/quicktime", "video/x-m4v":
+		return true
+	default:
+		return false
+	}
+}
+
+func playableAudioContentType(contentType string) bool {
+	switch baseContentType(contentType) {
+	case "audio/mpeg", "audio/mp3", "audio/mp4", "audio/x-m4a", "audio/aac", "audio/x-aac", "audio/wav", "audio/x-wav",
+		"audio/ogg", "audio/webm", "audio/flac", "audio/x-flac":
+		return true
+	default:
+		return false
+	}
+}
+
+func browserDocumentContentType(contentType string) bool {
+	switch baseContentType(contentType) {
+	case "application/pdf", "application/x-pdf", "text/plain", "application/msword",
+		"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+		"application/vnd.ms-excel",
+		"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+		"application/vnd.ms-powerpoint",
+		"application/vnd.openxmlformats-officedocument.presentationml.presentation":
 		return true
 	default:
 		return false

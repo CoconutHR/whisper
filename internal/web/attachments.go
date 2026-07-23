@@ -13,7 +13,7 @@ import (
 
 const (
 	attachmentURLTTL = 5 * time.Minute
-	videoURLTTL      = 2 * time.Hour
+	previewURLTTL    = 2 * time.Hour
 )
 
 func (s *Server) requireObjectStore(w http.ResponseWriter) bool {
@@ -149,15 +149,8 @@ func (s *Server) handleAttachmentItem(w http.ResponseWriter, r *http.Request, us
 		writeAttachmentError(w, err)
 		return
 	}
-	disposition := "attachment"
-	if r.URL.Query().Get("download") != "1" && previewableContentType(attachment.ContentType) {
-		disposition = "inline"
-	}
+	disposition, ttl := attachmentResponsePolicy(attachment.ContentType, r.URL.Query().Get("download") == "1")
 	contentDisposition := mime.FormatMediaType(disposition, map[string]string{"filename": attachment.Name})
-	ttl := attachmentURLTTL
-	if playableVideoContentType(attachment.ContentType) {
-		ttl = videoURLTTL
-	}
 	presigned, err := s.objects.PresignGet(r.Context(), attachment.ObjectKey, contentDisposition, ttl)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err)
@@ -166,22 +159,16 @@ func (s *Server) handleAttachmentItem(w http.ResponseWriter, r *http.Request, us
 	http.Redirect(w, r, presigned.URL, http.StatusTemporaryRedirect)
 }
 
-func previewableContentType(contentType string) bool {
-	switch strings.ToLower(contentType) {
-	case "image/gif", "image/jpeg", "image/png", "image/webp", "video/mp4", "video/webm", "video/ogg":
-		return true
-	default:
-		return false
+func attachmentResponsePolicy(contentType string, download bool) (string, time.Duration) {
+	disposition := "attachment"
+	if !download && chat.IsBrowserPreviewableContentType(contentType) {
+		disposition = "inline"
 	}
-}
-
-func playableVideoContentType(contentType string) bool {
-	switch strings.ToLower(contentType) {
-	case "video/mp4", "video/webm", "video/ogg":
-		return true
-	default:
-		return false
+	ttl := attachmentURLTTL
+	if chat.IsStreamableMediaContentType(contentType) || chat.IsBrowserDocumentContentType(contentType) {
+		ttl = previewURLTTL
 	}
+	return disposition, ttl
 }
 
 func writeAttachmentError(w http.ResponseWriter, err error) {

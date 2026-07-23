@@ -11,6 +11,39 @@ const MAX_ATTACHMENT_SIZE = 50 * 1024 * 1024;
 const MAX_ATTACHMENT_TOTAL_SIZE = 100 * 1024 * 1024;
 const MAX_ATTACHMENTS_PER_MESSAGE = 5;
 const MAX_STICKER_SIZE = 10 * 1024 * 1024;
+const VIDEO_CONTENT_TYPES = new Set([
+  "video/mp4", "video/webm", "video/ogg", "video/quicktime", "video/x-m4v"
+]);
+const AUDIO_CONTENT_TYPES = new Set([
+  "audio/mpeg", "audio/mp4", "audio/aac", "audio/wav", "audio/x-wav",
+  "audio/ogg", "audio/webm", "audio/flac", "audio/x-flac"
+]);
+const DOCUMENT_CONTENT_TYPES = new Set([
+  "application/pdf", "text/plain", "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.ms-excel",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.ms-powerpoint",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+]);
+const FILE_EXTENSION_CONTENT_TYPES = new Map([
+  ["pdf", "application/pdf"], ["txt", "text/plain"],
+  ["doc", "application/msword"],
+  ["docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
+  ["xls", "application/vnd.ms-excel"],
+  ["xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
+  ["ppt", "application/vnd.ms-powerpoint"],
+  ["pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"],
+  ["mp3", "audio/mpeg"], ["m4a", "audio/mp4"], ["aac", "audio/aac"],
+  ["wav", "audio/wav"], ["oga", "audio/ogg"], ["ogg", "audio/ogg"],
+  ["opus", "audio/ogg"], ["weba", "audio/webm"], ["flac", "audio/flac"],
+  ["mp4", "video/mp4"], ["m4v", "video/x-m4v"], ["mov", "video/quicktime"],
+  ["webm", "video/webm"], ["ogv", "video/ogg"]
+]);
+const CONTENT_TYPE_ALIASES = new Map([
+  ["audio/mp3", "audio/mpeg"], ["audio/x-m4a", "audio/mp4"],
+  ["audio/x-aac", "audio/aac"], ["application/x-pdf", "application/pdf"]
+]);
 const EMOJI_BATCH_SIZE = 160;
 const EMOJI_OPTIONS = [
   "😀", "😃", "😄", "😁", "😆", "😅", "😂", "🤣",
@@ -304,6 +337,7 @@ let imageViewerIndex = 0;
 let imageViewerScale = 1;
 let imageViewerOffsetX = 0;
 let imageViewerOffsetY = 0;
+let activeMediaElement = null;
 
 function persistDemoFriendColors() {
   localStorage.setItem(
@@ -675,8 +709,25 @@ function formatFileSize(size) {
   return `${(size / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function baseContentType(contentType) {
+  return String(contentType || "").split(";", 1)[0].trim().toLowerCase();
+}
+
+function fileExtension(name) {
+  const match = String(name || "").toLowerCase().match(/\.([a-z0-9]+)$/);
+  return match ? match[1] : "";
+}
+
+function attachmentContentType(file) {
+  const reportedType = baseContentType(file.type);
+  if (reportedType && reportedType !== "application/octet-stream") {
+    return CONTENT_TYPE_ALIASES.get(reportedType) || reportedType;
+  }
+  return FILE_EXTENSION_CONTENT_TYPES.get(fileExtension(file.name)) || "application/octet-stream";
+}
+
 function previewableImageType(contentType) {
-  return ["image/gif", "image/jpeg", "image/png", "image/webp"].includes(contentType);
+  return ["image/gif", "image/jpeg", "image/png", "image/webp"].includes(baseContentType(contentType));
 }
 
 function currentAttachmentDrafts() {
@@ -1041,13 +1092,26 @@ function createMessageMeta(message, canMention) {
 
 function normalizedAttachmentKind(attachment) {
   if (attachment.kind) return attachment.kind;
-  if (previewableImageType(attachment.contentType)) return "image";
-  if (["video/mp4", "video/webm", "video/ogg"].includes(attachment.contentType)) return "video";
+  const contentType = baseContentType(attachment.contentType);
+  if (previewableImageType(contentType)) return "image";
+  if (VIDEO_CONTENT_TYPES.has(contentType)) return "video";
+  if (AUDIO_CONTENT_TYPES.has(contentType)) return "audio";
+  if (DOCUMENT_CONTENT_TYPES.has(contentType)) return "document";
   return "file";
 }
 
 function openAttachmentDownload(attachment) {
-  window.open(`${attachment.url}?download=1`, "_blank", "noopener,noreferrer");
+  const separator = attachment.url.includes("?") ? "&" : "?";
+  window.open(`${attachment.url}${separator}download=1`, "_blank", "noopener,noreferrer");
+}
+
+function openAttachmentPreview(attachment) {
+  window.open(attachment.url, "_blank", "noopener,noreferrer");
+}
+
+function previewAttachment(attachment) {
+  if (normalizedAttachmentKind(attachment) === "image") openImageViewer(attachment);
+  else openAttachmentPreview(attachment);
 }
 
 function createMediaMoreButton(attachment, message, collectedSticker = false) {
@@ -1126,15 +1190,61 @@ function formatMediaTime(seconds) {
   return `${minutes}:${String(total % 60).padStart(2, "0")}`;
 }
 
+function mediaPlaybackContentType(contentType) {
+  switch (baseContentType(contentType)) {
+    case "audio/mp3": return "audio/mpeg";
+    case "audio/x-m4a": return "audio/mp4";
+    case "audio/x-aac": return "audio/aac";
+    case "audio/x-flac": return "audio/flac";
+    case "audio/x-wav": return "audio/wav";
+    case "video/x-m4v": return "video/mp4";
+    default: return baseContentType(contentType);
+  }
+}
+
+function createPlaybackRateControl(media, label = "播放速度") {
+  const rate = document.createElement("select");
+  rate.className = "media-rate";
+  rate.setAttribute("aria-label", label);
+  rate.title = label;
+  [0.75, 1, 1.25, 1.5, 2].forEach((value) => {
+    const option = document.createElement("option");
+    option.value = String(value);
+    option.textContent = `${value}×`;
+    if (value === 1) option.selected = true;
+    rate.append(option);
+  });
+  rate.addEventListener("change", () => {
+    media.playbackRate = Number(rate.value);
+  });
+  return rate;
+}
+
+function activateMedia(media) {
+  if (activeMediaElement && activeMediaElement !== media) activeMediaElement.pause();
+  activeMediaElement = media;
+}
+
+function releaseMedia(media) {
+  if (activeMediaElement === media) activeMediaElement = null;
+}
+
+function mediaCanPlay(media, attachment) {
+  const contentType = mediaPlaybackContentType(attachment.contentType);
+  return !contentType || media.canPlayType(contentType) !== "";
+}
+
 function createVideoPlayer(attachment, message) {
   const player = document.createElement("div");
   player.className = "message-video";
   const video = document.createElement("video");
-  video.src = attachment.url;
   video.preload = "metadata";
   video.playsInline = true;
   video.controls = false;
   video.setAttribute("aria-label", attachment.name);
+  if (!mediaCanPlay(video, attachment)) {
+    return createFileCard(attachment, message, "当前浏览器不支持在线播放");
+  }
 
   const controls = document.createElement("div");
   controls.className = "video-controls";
@@ -1168,6 +1278,16 @@ function createVideoPlayer(attachment, message) {
   volume.step = "0.05";
   volume.value = "1";
   volume.setAttribute("aria-label", "音量");
+  const rate = createPlaybackRateControl(video);
+  const pip = document.createElement("button");
+  pip.type = "button";
+  pip.className = "video-pip";
+  pip.textContent = "▣";
+  pip.setAttribute("aria-label", "画中画");
+  pip.title = "画中画";
+  const pipSupported = Boolean(document.pictureInPictureEnabled)
+    && typeof video.requestPictureInPicture === "function";
+  pip.hidden = !pipSupported;
   const fullscreen = document.createElement("button");
   fullscreen.type = "button";
   fullscreen.className = "video-fullscreen";
@@ -1175,9 +1295,12 @@ function createVideoPlayer(attachment, message) {
   fullscreen.setAttribute("aria-label", "全屏");
   fullscreen.title = "全屏";
   const more = createMediaMoreButton(attachment, message);
-  controls.append(play, timeline, time, mute, volume, fullscreen, more);
+  controls.append(play, timeline, time, mute, volume, rate, pip, fullscreen, more);
   player.append(video, controls);
 
+  const showFallback = () => {
+    if (player.parentNode) player.replaceWith(createFileCard(attachment, message, "当前浏览器不支持在线播放"));
+  };
   const updatePlaybackState = () => {
     const playing = !video.paused && !video.ended;
     play.textContent = playing ? "Ⅱ" : "▶";
@@ -1193,9 +1316,10 @@ function createVideoPlayer(attachment, message) {
   };
   play.addEventListener("click", () => { void togglePlayback(); });
   video.addEventListener("click", () => { void togglePlayback(); });
-  video.addEventListener("play", updatePlaybackState);
-  video.addEventListener("pause", updatePlaybackState);
-  video.addEventListener("ended", updatePlaybackState);
+  video.addEventListener("play", () => { activateMedia(video); updatePlaybackState(); });
+  video.addEventListener("pause", () => { releaseMedia(video); updatePlaybackState(); });
+  video.addEventListener("ended", () => { releaseMedia(video); updatePlaybackState(); });
+  video.addEventListener("error", showFallback);
   video.addEventListener("timeupdate", () => {
     timeline.value = video.duration ? String(Math.round((video.currentTime / video.duration) * 1000)) : "0";
     time.textContent = `${formatMediaTime(video.currentTime)} / ${formatMediaTime(video.duration)}`;
@@ -1216,20 +1340,162 @@ function createVideoPlayer(attachment, message) {
     mute.textContent = video.muted ? "×" : "♪";
     mute.setAttribute("aria-label", video.muted ? "取消静音" : "静音");
   });
+  pip.addEventListener("click", async () => {
+    if (!pipSupported) return;
+    try {
+      if (document.pictureInPictureElement === video) await document.exitPictureInPicture();
+      else await video.requestPictureInPicture();
+    } catch (_) {}
+  });
+  video.addEventListener("enterpictureinpicture", () => {
+    pip.textContent = "▣";
+    pip.setAttribute("aria-label", "退出画中画");
+    pip.title = "退出画中画";
+  });
+  video.addEventListener("leavepictureinpicture", () => {
+    pip.setAttribute("aria-label", "画中画");
+    pip.title = "画中画";
+  });
   fullscreen.addEventListener("click", () => {
     if (document.fullscreenElement) void document.exitFullscreen();
     else if (player.requestFullscreen) void player.requestFullscreen();
   });
+  video.src = attachment.url;
   bindMediaContextMenu(player, attachment, message);
   return player;
 }
 
-function createFileCard(attachment, message) {
+function attachmentBadge(attachment, kind) {
+  const extension = fileExtension(attachment.name).toUpperCase();
+  if (kind === "document") return extension || "DOC";
+  if (kind === "audio") return "♫";
+  if (kind === "video") return "▶";
+  if (kind === "image") return "▧";
+  return "↥";
+}
+
+function createAudioPlayer(attachment, message) {
+  const player = document.createElement("div");
+  player.className = "message-audio";
+  const audio = document.createElement("audio");
+  audio.preload = "metadata";
+  audio.controls = false;
+  if (!mediaCanPlay(audio, attachment)) {
+    return createFileCard(attachment, message, "当前浏览器不支持在线播放");
+  }
+
+  const summary = document.createElement("div");
+  summary.className = "audio-summary";
+  const icon = document.createElement("span");
+  icon.className = "audio-file-icon";
+  icon.textContent = "♫";
+  icon.setAttribute("aria-hidden", "true");
+  const name = document.createElement("span");
+  name.className = "audio-file-name";
+  name.textContent = attachment.name;
+  name.title = attachment.name;
+  const format = document.createElement("span");
+  format.className = "audio-file-format";
+  format.textContent = fileExtension(attachment.name).toUpperCase() || "音频";
+  const download = document.createElement("button");
+  download.type = "button";
+  download.className = "audio-download";
+  download.textContent = "↓";
+  download.setAttribute("aria-label", `下载音频${attachment.name}`);
+  download.title = "下载";
+  download.addEventListener("click", () => openAttachmentDownload(attachment));
+  summary.append(icon, name, format, download, createMediaMoreButton(attachment, message));
+
+  const controls = document.createElement("div");
+  controls.className = "audio-controls";
+  const play = document.createElement("button");
+  play.type = "button";
+  play.className = "audio-play";
+  play.textContent = "▶";
+  play.setAttribute("aria-label", "播放");
+  play.title = "播放";
+  const timeline = document.createElement("input");
+  timeline.className = "audio-timeline";
+  timeline.type = "range";
+  timeline.min = "0";
+  timeline.max = "1000";
+  timeline.value = "0";
+  timeline.setAttribute("aria-label", "播放进度");
+  const time = document.createElement("span");
+  time.className = "audio-time";
+  time.textContent = "0:00 / 0:00";
+  const mute = document.createElement("button");
+  mute.type = "button";
+  mute.className = "audio-mute";
+  mute.textContent = "♪";
+  mute.setAttribute("aria-label", "静音");
+  mute.title = "静音";
+  const volume = document.createElement("input");
+  volume.className = "audio-volume";
+  volume.type = "range";
+  volume.min = "0";
+  volume.max = "1";
+  volume.step = "0.05";
+  volume.value = "1";
+  volume.setAttribute("aria-label", "音量");
+  const rate = createPlaybackRateControl(audio);
+  controls.append(play, timeline, time, mute, volume, rate);
+  player.append(summary, audio, controls);
+
+  const showFallback = () => {
+    if (player.parentNode) player.replaceWith(createFileCard(attachment, message, "当前浏览器不支持在线播放"));
+  };
+  const updatePlaybackState = () => {
+    const playing = !audio.paused && !audio.ended;
+    play.textContent = playing ? "Ⅱ" : "▶";
+    play.setAttribute("aria-label", playing ? "暂停" : "播放");
+    play.title = playing ? "暂停" : "播放";
+  };
+  const togglePlayback = async () => {
+    if (audio.paused || audio.ended) {
+      try { await audio.play(); } catch (_) {}
+    } else {
+      audio.pause();
+    }
+  };
+  play.addEventListener("click", () => { void togglePlayback(); });
+  audio.addEventListener("play", () => { activateMedia(audio); updatePlaybackState(); });
+  audio.addEventListener("pause", () => { releaseMedia(audio); updatePlaybackState(); });
+  audio.addEventListener("ended", () => { releaseMedia(audio); updatePlaybackState(); });
+  audio.addEventListener("error", showFallback);
+  audio.addEventListener("timeupdate", () => {
+    timeline.value = audio.duration ? String(Math.round((audio.currentTime / audio.duration) * 1000)) : "0";
+    time.textContent = `${formatMediaTime(audio.currentTime)} / ${formatMediaTime(audio.duration)}`;
+  });
+  audio.addEventListener("loadedmetadata", () => {
+    time.textContent = `0:00 / ${formatMediaTime(audio.duration)}`;
+  });
+  timeline.addEventListener("input", () => {
+    if (audio.duration) audio.currentTime = (Number(timeline.value) / 1000) * audio.duration;
+  });
+  volume.addEventListener("input", () => {
+    audio.volume = Number(volume.value);
+    audio.muted = audio.volume === 0;
+    mute.textContent = audio.muted ? "×" : "♪";
+  });
+  mute.addEventListener("click", () => {
+    audio.muted = !audio.muted;
+    mute.textContent = audio.muted ? "×" : "♪";
+    mute.setAttribute("aria-label", audio.muted ? "取消静音" : "静音");
+  });
+  audio.src = attachment.url;
+  bindMediaContextMenu(player, attachment, message);
+  return player;
+}
+
+function createFileCard(attachment, message, note = "") {
   const card = document.createElement("div");
   card.className = "message-file";
+  const kind = normalizedAttachmentKind(attachment);
   const icon = document.createElement("span");
   icon.className = "message-file-icon";
-  icon.textContent = normalizedAttachmentKind(attachment) === "image" ? "▧" : "↥";
+  if (kind === "document") icon.classList.add("document-badge");
+  icon.textContent = attachmentBadge(attachment, kind);
   icon.setAttribute("aria-hidden", "true");
   const name = document.createElement("span");
   name.className = "message-file-name";
@@ -1237,16 +1503,16 @@ function createFileCard(attachment, message) {
   name.title = attachment.name;
   const size = document.createElement("span");
   size.className = "message-file-size";
-  size.textContent = formatFileSize(attachment.size);
+  size.textContent = note ? `${formatFileSize(attachment.size)} · ${note}` : formatFileSize(attachment.size);
   const actions = document.createElement("span");
   actions.className = "message-file-actions";
-  if (normalizedAttachmentKind(attachment) === "image") {
+  if (kind === "image" || kind === "document") {
     const preview = document.createElement("button");
     preview.type = "button";
-    preview.textContent = "⌕";
-    preview.setAttribute("aria-label", `查看图片${attachment.name}`);
-    preview.title = "查看";
-    preview.addEventListener("click", () => openImageViewer(attachment));
+    preview.textContent = kind === "document" ? "↗" : "⌕";
+    preview.setAttribute("aria-label", `${kind === "document" ? "打开文档" : "查看图片"}${attachment.name}`);
+    preview.title = kind === "document" ? "打开" : "查看";
+    preview.addEventListener("click", () => previewAttachment(attachment));
     actions.append(preview);
   }
   const download = document.createElement("button");
@@ -1267,6 +1533,7 @@ function createMessageAttachment(attachment, message) {
     || (attachment.inline == null && attachment.size <= MAX_STICKER_SIZE);
   if (kind === "image" && inlineImage) return createInlineImage(attachment, message);
   if (kind === "video") return createVideoPlayer(attachment, message);
+  if (kind === "audio") return createAudioPlayer(attachment, message);
   return createFileCard(attachment, message);
 }
 
@@ -1614,7 +1881,7 @@ async function uploadAttachmentDraft(draft) {
   draft.error = "";
   renderAttachmentDrafts();
   try {
-    const contentType = draft.file.type || "application/octet-stream";
+    const contentType = attachmentContentType(draft.file);
     const presigned = await apiRequest("/api/attachments/presign", {
       method: "POST",
       body: { name: draft.file.name, size: draft.file.size, contentType }
@@ -2048,7 +2315,7 @@ function showMediaMenu(x, y, context) {
   const kind = normalizedAttachmentKind(attachment);
   const isCollected = state.stickers.some((sticker) => sticker.id === attachment.id);
   const availability = {
-    preview: kind === "image",
+    preview: kind === "image" || kind === "document",
     collect: backendEnabled && kind === "image" && !isCollected && !collectedSticker,
     download: backendEnabled,
     forward: backendEnabled && Boolean(message?.attachments?.some((item) => item.id === attachment.id)),
@@ -2057,6 +2324,7 @@ function showMediaMenu(x, y, context) {
   };
   mediaMenuEl.querySelectorAll("[data-media-action]").forEach((button) => {
     button.hidden = !availability[button.dataset.mediaAction];
+    if (button.dataset.mediaAction === "preview") button.textContent = kind === "document" ? "打开" : "查看";
   });
   mediaMenuEl.hidden = false;
   const rect = mediaMenuEl.getBoundingClientRect();
@@ -2625,7 +2893,7 @@ mediaMenuEl.addEventListener("click", (event) => {
   const context = mediaMenuContext;
   const action = button.dataset.mediaAction;
   hideMediaMenu();
-  if (action === "preview") openImageViewer(context.attachment);
+  if (action === "preview") previewAttachment(context.attachment);
   else if (action === "collect") void favoriteSticker(context.attachment);
   else if (action === "download") openAttachmentDownload(context.attachment);
   else if (action === "forward") openForwardDialog(context.attachment);

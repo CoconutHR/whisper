@@ -372,6 +372,32 @@ func TestAttachmentAPIRequiresConfiguredStorage(t *testing.T) {
 	}
 }
 
+func TestAttachmentResponsePolicy(t *testing.T) {
+	cases := []struct {
+		contentType string
+		download    bool
+		disposition string
+		ttl         time.Duration
+	}{
+		{"application/pdf", false, "inline", previewURLTTL},
+		{"text/plain", false, "inline", previewURLTTL},
+		{"application/vnd.openxmlformats-officedocument.wordprocessingml.document", false, "inline", previewURLTTL},
+		{"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", false, "inline", previewURLTTL},
+		{"audio/flac", false, "inline", previewURLTTL},
+		{"video/mp4", false, "inline", previewURLTTL},
+		{"text/html", false, "attachment", attachmentURLTTL},
+		{"image/svg+xml", false, "attachment", attachmentURLTTL},
+		{"application/pdf", true, "attachment", previewURLTTL},
+	}
+	for _, testCase := range cases {
+		disposition, ttl := attachmentResponsePolicy(testCase.contentType, testCase.download)
+		if disposition != testCase.disposition || ttl != testCase.ttl {
+			t.Errorf("attachmentResponsePolicy(%q, %v) = %q, %s", testCase.contentType,
+				testCase.download, disposition, ttl)
+		}
+	}
+}
+
 func TestAttachmentPresignCompleteAndDelete(t *testing.T) {
 	objects := newFakeObjectStore()
 	server, client := newTestServerWithObjects(t, objects)
