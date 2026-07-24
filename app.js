@@ -209,6 +209,7 @@ const STORAGE_KEY_MIGRATIONS = [
   ["tmpchat-parse-latex", "whisper-parse-latex"],
   ["tmpchat-theme", "whisper-theme"]
 ];
+const MESSAGE_DRAFTS_STORAGE_PREFIX = "whisper-message-drafts:";
 
 STORAGE_KEY_MIGRATIONS.forEach(([legacyKey, currentKey]) => {
   if (localStorage.getItem(currentKey) === null) {
@@ -290,6 +291,7 @@ function loadStoredFriendColors() {
 }
 
 const state = {
+  currentUserID: "",
   currentUser: initialProfileName,
   currentConversation: PUBLIC_GROUP_CONVERSATION,
   friendMenuMember: null,
@@ -299,6 +301,10 @@ const state = {
   stickers: [],
   attachmentDrafts: [],
   messageDrafts: new Map(),
+  conversationHasMore: new Map(),
+  loadingMessageHistory: new Set(),
+  messageHistoryErrors: new Set(),
+  conversationViewVersion: 0,
   friends: new Set([RESERVED_NICKNAME]),
   friendColors: loadStoredFriendColors(),
   unreadCounts: new Map(),
@@ -1096,6 +1102,43 @@ function setMessageDraft(conversationId, value) {
   if (!state.conversations[conversationId]) return;
   if (value) state.messageDrafts.set(conversationId, value);
   else state.messageDrafts.delete(conversationId);
+  persistMessageDrafts();
+}
+
+function messageDraftStorageKey() {
+  const identity = state.currentUserID || "demo";
+  return `${MESSAGE_DRAFTS_STORAGE_PREFIX}${encodeURIComponent(identity)}`;
+}
+
+function persistMessageDrafts() {
+  try {
+    if (state.messageDrafts.size === 0) {
+      sessionStorage.removeItem(messageDraftStorageKey());
+      return;
+    }
+    sessionStorage.setItem(
+      messageDraftStorageKey(),
+      JSON.stringify(Object.fromEntries(state.messageDrafts))
+    );
+  } catch (_) {}
+}
+
+function loadStoredMessageDrafts() {
+  state.messageDrafts = new Map();
+  try {
+    const stored = JSON.parse(sessionStorage.getItem(messageDraftStorageKey()) || "{}");
+    Object.entries(stored).forEach(([conversationId, value]) => {
+      if (state.conversations[conversationId] && typeof value === "string" && value.length <= 2000) {
+        state.messageDrafts.set(conversationId, value);
+      }
+    });
+  } catch (_) {}
+}
+
+function clearStoredMessageDrafts() {
+  try {
+    sessionStorage.removeItem(messageDraftStorageKey());
+  } catch (_) {}
 }
 
 function saveCurrentMessageDraft() {
@@ -1106,6 +1149,65 @@ function restoreMessageDraft(conversationId) {
   inputEl.value = state.messageDrafts.get(conversationId) || "";
 }
 
+function scrollConversationToLatest() {
+  const scroll = () => {
+    window.scrollTo({ top: document.documentElement.scrollHeight });
+  };
+  window.requestAnimationFrame(() => {
+    scroll();
+    window.requestAnimationFrame(scroll);
+  });
+  window.setTimeout(scroll, 100);
+  if (document.fonts?.ready) document.fonts.ready.then(scroll).catch(() => {});
+}
+
+function messageElementById(messageId) {
+  return [...messagesEl.querySelectorAll(".message[data-message-id]")]
+    .find((element) => element.dataset.messageId === messageId) || null;
+}
+
+async function loadOlderMessages(conversationId) {
+  if (!backendEnabled || !state.conversationHasMore.get(conversationId)
+    || state.loadingMessageHistory.has(conversationId)) return;
+  const current = state.conversations[conversationId] || [];
+  const oldest = current.find((message) => message.id && message.sentAt);
+  if (!oldest) return;
+
+  const viewVersion = state.conversationViewVersion;
+  const anchorTop = messageElementById(oldest.id)?.getBoundingClientRect().top;
+  state.loadingMessageHistory.add(conversationId);
+  state.messageHistoryErrors.delete(conversationId);
+  if (state.currentConversation === conversationId) renderMessages();
+  try {
+    const query = new URLSearchParams({
+      conversation: conversationId,
+      beforeSentAt: oldest.sentAt,
+      beforeId: oldest.id
+    });
+    const page = await apiRequest(`/api/conversations/messages?${query}`);
+    const latest = state.conversations[conversationId] || [];
+    if (!latest.some((message) => message.id === oldest.id)) return;
+    const knownMessageIDs = new Set(latest.map((message) => message.id).filter(Boolean));
+    const older = (page.messages || []).filter((message) => (
+      !message.id || !knownMessageIDs.has(message.id)
+    ));
+    state.conversations[conversationId] = [...older, ...latest];
+    state.conversationHasMore.set(conversationId, Boolean(page.hasMore));
+  } catch (_) {
+    state.messageHistoryErrors.add(conversationId);
+  } finally {
+    state.loadingMessageHistory.delete(conversationId);
+    if (state.currentConversation === conversationId) {
+      renderMessages();
+      const nextAnchor = messageElementById(oldest.id);
+      if (state.conversationViewVersion === viewVersion
+        && nextAnchor && Number.isFinite(anchorTop)) {
+        window.scrollBy({ top: nextAnchor.getBoundingClientRect().top - anchorTop });
+      }
+    }
+  }
+}
+
 function switchConversation(conversationId) {
   const groupSettingsId = groupIdFromSettings(conversationId);
   const allowedPanel = conversationId === "self" || conversationId === "group-create"
@@ -1114,6 +1216,7 @@ function switchConversation(conversationId) {
 
   saveCurrentMessageDraft();
   clearConversationUnread(conversationId);
+  state.conversationViewVersion += 1;
   state.currentConversation = conversationId;
   restoreMessageDraft(conversationId);
   setContentPicker(false);
@@ -1132,7 +1235,7 @@ function switchConversation(conversationId) {
     else groupNameInputEl.focus();
   } else {
     inputEl.focus();
-    window.scrollTo({ top: document.body.scrollHeight });
+    scrollConversationToLatest();
   }
 }
 
@@ -1718,6 +1821,21 @@ function renderMessages() {
   messagesEl.replaceChildren();
   const conversationMessages = currentMessages();
 
+  if (backendEnabled && state.conversationHasMore.get(state.currentConversation)) {
+    const control = document.createElement("div");
+    control.className = "message-history-control";
+    const button = document.createElement("button");
+    button.type = "button";
+    const loading = state.loadingMessageHistory.has(state.currentConversation);
+    button.disabled = loading;
+    button.textContent = loading
+      ? "加载中..."
+      : state.messageHistoryErrors.has(state.currentConversation) ? "加载失败，重试" : "加载更多";
+    button.addEventListener("click", () => { void loadOlderMessages(state.currentConversation); });
+    control.append(button);
+    messagesEl.append(control);
+  }
+
   if (conversationMessages.length === 0) {
     const row = document.createElement("div");
     row.className = "message";
@@ -1739,6 +1857,7 @@ function renderMessages() {
       && isGroupConversation();
     const row = document.createElement("div");
     row.className = "message";
+    if (message.id) row.dataset.messageId = message.id;
 
     const content = document.createElement("div");
     content.className = "message-content";
@@ -2314,6 +2433,7 @@ async function sendCurrentMessage() {
     await sendPreparedMessage({ text, attachmentIds }, destination);
     if (state.messageDrafts.get(destination.conversationId) === rawText) {
       state.messageDrafts.delete(destination.conversationId);
+      persistMessageDrafts();
     }
     if (state.currentConversation === destination.conversationId && inputEl.value === rawText) {
       inputEl.value = "";
@@ -2890,7 +3010,9 @@ function showAuthUI(message = "") {
   backendAuthenticated = false;
   closeSocket();
   clearLocalAttachmentDrafts();
+  clearStoredMessageDrafts();
   state.messageDrafts.clear();
+  state.currentUserID = "";
   inputEl.value = "";
   resizeInput();
   setContentPicker(false);
@@ -2915,6 +3037,8 @@ function showApplicationUI() {
   if (requestedConversation && state.conversations[requestedConversation]) {
     switchConversation(requestedConversation);
     history.replaceState(null, "", location.pathname);
+  } else {
+    scrollConversationToLatest();
   }
   markConversationRead(state.currentConversation);
   void initializePushNotifications();
@@ -2942,14 +3066,20 @@ function applyGroupView(group) {
 function removeGroup(groupId) {
   const conversationId = groupConversationIdFor(groupId);
   state.messageDrafts.delete(conversationId);
+  persistMessageDrafts();
+  state.conversationHasMore.delete(conversationId);
+  state.loadingMessageHistory.delete(conversationId);
+  state.messageHistoryErrors.delete(conversationId);
   state.groups.delete(groupId);
   delete state.conversations[conversationId];
   clearConversationUnread(conversationId);
   if (state.currentConversation === conversationId
     || state.currentConversation === groupSettingsIdFor(groupId)) {
+    state.conversationViewVersion += 1;
     state.currentConversation = PUBLIC_GROUP_CONVERSATION;
     restoreMessageDraft(PUBLIC_GROUP_CONVERSATION);
     resizeInput();
+    scrollConversationToLatest();
   }
 }
 
@@ -2959,6 +3089,7 @@ function hydrateBootstrap(payload) {
     return false;
   }
   if (payload.serverInstance) serverInstance = payload.serverInstance;
+  state.currentUserID = payload.self.id || "";
   state.currentUser = payload.self.name;
   state.profile.signature = payload.self.signature || "";
   state.currentConversation = PUBLIC_GROUP_CONVERSATION;
@@ -2968,6 +3099,10 @@ function hydrateBootstrap(payload) {
   state.friends = new Set(payload.friends || []);
   state.friendColors = new Map(Object.entries(payload.friendColors || {}));
   state.conversations = payload.conversations || { [PUBLIC_GROUP_CONVERSATION]: [], "dm:coco": [] };
+  state.conversationHasMore = new Map(Object.entries(payload.conversationHasMore || {})
+    .filter(([, hasMore]) => hasMore === true));
+  state.loadingMessageHistory.clear();
+  state.messageHistoryErrors.clear();
   resetUnreadState();
   state.unreadCounts = new Map(Object.entries(payload.unreadCounts || {})
     .filter(([, count]) => Number.isInteger(count) && count > 0));
@@ -2990,6 +3125,8 @@ function hydrateBootstrap(payload) {
     if (!state.conversations[key]) state.conversations[key] = [];
   });
   if (!state.conversations[PUBLIC_GROUP_CONVERSATION]) state.conversations[PUBLIC_GROUP_CONVERSATION] = [];
+  loadStoredMessageDrafts();
+  restoreMessageDraft(state.currentConversation);
   reconcileAttachmentDrafts();
 
   showMessageTimeEl.checked = payload.self.settings.showMessageTime;
@@ -3026,6 +3163,11 @@ function renameRemoteMember(previousName, memberView) {
     if (state.messageDrafts.has(previousKey)) {
       state.messageDrafts.set(nextKey, state.messageDrafts.get(previousKey));
       state.messageDrafts.delete(previousKey);
+      persistMessageDrafts();
+    }
+    if (state.conversationHasMore.has(previousKey)) {
+      state.conversationHasMore.set(nextKey, state.conversationHasMore.get(previousKey));
+      state.conversationHasMore.delete(previousKey);
     }
     if (state.friends.delete(previousName)) state.friends.add(memberView.name);
     if (state.friendColors.has(previousName)) {
@@ -3165,6 +3307,7 @@ function connectSocket() {
         const payload = await apiRequest("/api/bootstrap");
         if (hydrateBootstrap(payload) === false) return;
         renderConversation();
+        scrollConversationToLatest();
         markConversationRead(state.currentConversation);
         connectSocket();
       } catch (error) {
@@ -3178,8 +3321,11 @@ function connectSocket() {
 async function startApplication() {
   if (!HTTP_PROTOCOLS.has(location.protocol)) {
     logoutEl.hidden = true;
+    loadStoredMessageDrafts();
+    restoreMessageDraft(state.currentConversation);
     renderConversation();
     resizeInput();
+    scrollConversationToLatest();
     return;
   }
 
@@ -3196,8 +3342,11 @@ async function startApplication() {
     appMainEl.hidden = false;
     sidebarEl.hidden = false;
     logoutEl.hidden = true;
+    loadStoredMessageDrafts();
+    restoreMessageDraft(state.currentConversation);
     renderConversation();
     resizeInput();
+    scrollConversationToLatest();
     return;
   }
 
@@ -3731,6 +3880,9 @@ clearMessagesEl.addEventListener("click", async () => {
       });
     }
     state.conversations[PUBLIC_GROUP_CONVERSATION] = [];
+    state.conversationHasMore.delete(PUBLIC_GROUP_CONVERSATION);
+    state.messageHistoryErrors.delete(PUBLIC_GROUP_CONVERSATION);
+    if (state.currentConversation === PUBLIC_GROUP_CONVERSATION) renderMessages();
     setFormStatus(profileSaveStatusEl, "群聊记录已清空");
   } catch (error) {
     setFormStatus(profileSaveStatusEl, error.message, true);
@@ -3746,6 +3898,8 @@ clearFriendMessagesEl.addEventListener("click", async () => {
     }
     const conversationId = conversationIdFor(name);
     state.conversations[conversationId] = [];
+    state.conversationHasMore.delete(conversationId);
+    state.messageHistoryErrors.delete(conversationId);
     clearConversationUnread(conversationId);
     hideFriendMenu();
     if (state.currentConversation === conversationId) renderMessages();

@@ -358,6 +358,29 @@ body[data-conversation-kind="profile"] .conversation-heading h1 {
   padding-bottom: calc(var(--composer-height, 52px) + 34px);
 }
 
+.message-history-control {
+  display: flex;
+  min-height: 32px;
+  align-items: flex-start;
+  justify-content: center;
+  margin-bottom: 1em;
+}
+
+.message-history-control button {
+  min-height: 28px;
+  padding: 0.3em 0.75em;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.message-history-control button:hover,
+.message-history-control button:focus-visible {
+  background: var(--button-hover);
+  color: var(--strong);
+  text-decoration: none;
+}
+
 .message {
   position: relative;
   min-height: 1.35em;

@@ -237,6 +237,46 @@ func TestConversationReadAPI(t *testing.T) {
 	}
 }
 
+func TestConversationMessagesAPI(t *testing.T) {
+	server, client := newTestServer(t)
+	defer server.Close()
+	response := jsonRequest(t, client, http.MethodPost, server.URL+"/api/register", map[string]string{
+		"name": "pager", "password": "password123",
+	})
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusCreated {
+		t.Fatalf("register status = %d", response.StatusCode)
+	}
+
+	response, err := client.Get(server.URL + "/api/conversations/messages?conversation=dm%3Acoco")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("messages status = %d", response.StatusCode)
+	}
+	var page struct {
+		Messages []chat.MessageView `json:"messages"`
+		HasMore  bool               `json:"hasMore"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&page); err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Messages) != 1 || page.HasMore {
+		t.Fatalf("messages page = %#v", page)
+	}
+
+	response, err = client.Get(server.URL + "/api/conversations/messages?conversation=dm%3Acoco&beforeSentAt=bad&beforeId=id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid cursor status = %d", response.StatusCode)
+	}
+}
+
 func TestWebSocketMessageRecall(t *testing.T) {
 	server, client := newTestServer(t)
 	defer server.Close()

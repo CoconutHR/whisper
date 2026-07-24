@@ -83,6 +83,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/settings", s.requireAuth(s.handleSettings))
 	mux.HandleFunc("/api/push/config", s.requireAuth(s.handlePushConfig))
 	mux.HandleFunc("/api/push/subscription", s.requireAuth(s.handlePushSubscription))
+	mux.HandleFunc("/api/conversations/messages", s.requireAuth(s.handleConversationMessages))
 	mux.HandleFunc("/api/conversations/read", s.requireAuth(s.handleReadConversation))
 	mux.HandleFunc("/api/conversations/clear", s.requireAuth(s.handleClearConversation))
 	mux.HandleFunc("/api/friends/delete", s.requireAuth(s.handleDeleteFriend))

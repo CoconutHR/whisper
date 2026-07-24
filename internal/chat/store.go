@@ -166,16 +166,17 @@ type GroupMutation struct {
 }
 
 type Bootstrap struct {
-	Self           SelfView                 `json:"self"`
-	Members        []MemberView             `json:"members"`
-	Friends        []string                 `json:"friends"`
-	FriendColors   map[string]string        `json:"friendColors"`
-	Groups         []GroupView              `json:"groups"`
-	ServerInstance string                   `json:"serverInstance,omitempty"`
-	UploadsEnabled bool                     `json:"uploadsEnabled"`
-	Stickers       []AttachmentView         `json:"stickers"`
-	Conversations  map[string][]MessageView `json:"conversations"`
-	UnreadCounts   map[string]int           `json:"unreadCounts"`
+	Self                SelfView                 `json:"self"`
+	Members             []MemberView             `json:"members"`
+	Friends             []string                 `json:"friends"`
+	FriendColors        map[string]string        `json:"friendColors"`
+	Groups              []GroupView              `json:"groups"`
+	ServerInstance      string                   `json:"serverInstance,omitempty"`
+	UploadsEnabled      bool                     `json:"uploadsEnabled"`
+	Stickers            []AttachmentView         `json:"stickers"`
+	Conversations       map[string][]MessageView `json:"conversations"`
+	ConversationHasMore map[string]bool          `json:"conversationHasMore"`
+	UnreadCounts        map[string]int           `json:"unreadCounts"`
 }
 
 type DeliveryNotice struct {
@@ -441,6 +442,8 @@ func (s *Store) initializeSchema() error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS message_stickers_asset_idx ON message_stickers(attachment_id)`,
 		`CREATE INDEX IF NOT EXISTS messages_sent_at_idx ON messages(sent_at, id)`,
+		`CREATE INDEX IF NOT EXISTS messages_group_page_idx ON messages(kind, group_id, sent_at, id)`,
+		`CREATE INDEX IF NOT EXISTS messages_private_page_idx ON messages(kind, from_id, to_id, sent_at, id)`,
 		`CREATE INDEX IF NOT EXISTS messages_recipient_idx ON messages(to_id, delivered_at)`,
 		`CREATE TABLE IF NOT EXISTS push_subscriptions (
 			endpoint TEXT PRIMARY KEY,
@@ -740,7 +743,7 @@ func (s *Store) Bootstrap(userID string, online map[string]bool) (Bootstrap, err
 		usersByID[user.ID] = user
 	}
 
-	groups, groupAccess, err := groupsForUserTx(tx, userID, online)
+	groups, _, err := groupsForUserTx(tx, userID, online)
 	if err != nil {
 		return Bootstrap{}, err
 	}
@@ -752,7 +755,7 @@ func (s *Store) Bootstrap(userID string, online map[string]bool) (Bootstrap, err
 		Self:    selfView(viewer),
 		Members: []MemberView{{Name: CocoName, Online: true, Reserved: true, Signature: "仅自己可见"}},
 		Friends: []string{}, FriendColors: map[string]string{}, Groups: groups,
-		Conversations: conversations, UnreadCounts: map[string]int{},
+		Conversations: conversations, ConversationHasMore: map[string]bool{}, UnreadCounts: map[string]int{},
 	}
 	result.Stickers, err = stickersForUser(tx, userID)
 	if err != nil {
@@ -803,51 +806,29 @@ func (s *Store) Bootstrap(userID string, online map[string]bool) (Bootstrap, err
 	}
 	sort.Strings(result.Friends)
 
-	clearedAt, err := clearedTimes(tx, userID)
-	if err != nil {
-		return Bootstrap{}, err
-	}
 	readCursors, err := conversationReadCursors(tx, userID)
 	if err != nil {
 		return Bootstrap{}, err
 	}
-	messageRows, err := tx.Query(`SELECT id, kind, from_id, COALESCE(to_id, ''), COALESCE(group_id, ''), text, sticker, sent_at, delivered_at, recalled_at
-		FROM messages WHERE (kind = 'group' AND (group_id IN (SELECT group_id FROM group_members WHERE user_id = ?) OR group_id IS NULL))
-		OR from_id = ? OR to_id = ? ORDER BY sent_at, id`, userID, userID, userID)
-	if err != nil {
-		return Bootstrap{}, err
-	}
-	for messageRows.Next() {
-		message, err := scanMessage(messageRows)
+	for clientKey := range result.Conversations {
+		conversation, err := resolveConversationTx(tx, userID, clientKey)
 		if err != nil {
-			messageRows.Close()
 			return Bootstrap{}, err
 		}
-		message.Attachments, err = attachmentsForMessage(tx, message.ID)
+		page, err := conversationMessagePageTx(tx, userID, conversation, usersByID, nil, MessagePageSize)
 		if err != nil {
-			messageRows.Close()
 			return Bootstrap{}, err
 		}
-		message.StickerAttachment, err = stickerForMessage(tx, message.ID)
+		result.Conversations[clientKey] = page.Messages
+		result.ConversationHasMore[clientKey] = page.HasMore
+		cursor, hasCursor := readCursors[conversation.StableKey]
+		count, err := conversationUnreadCountTx(tx, userID, conversation, cursor, hasCursor)
 		if err != nil {
-			messageRows.Close()
 			return Bootstrap{}, err
 		}
-		key, visible := visibleConversation(userID, message, clearedAt, usersByID, groupAccess)
-		if !visible {
-			continue
+		if count > 0 {
+			result.UnreadCounts[clientKey] = count
 		}
-		result.Conversations[key] = append(result.Conversations[key], messageView(userID, message, usersByID))
-		cursor, hasCursor := readCursors[stableConversationKeyForMessage(userID, message)]
-		if message.FromID != userID && message.FromID != "*" &&
-			(!hasCursor || cursorComesAfter(conversationReadCursor{
-				SentAt: message.SentAt, MessageID: message.ID,
-			}, cursor)) {
-			result.UnreadCounts[key]++
-		}
-	}
-	if err := messageRows.Close(); err != nil {
-		return Bootstrap{}, err
 	}
 	if err := tx.Commit(); err != nil {
 		return Bootstrap{}, err
