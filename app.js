@@ -1,5 +1,7 @@
 const MAX_NICKNAME_LENGTH = 7;
 const RESERVED_NICKNAME = "coco";
+const CLIENT_PLATFORM = navigator.userAgentData?.platform || navigator.platform || "";
+document.documentElement.classList.toggle("platform-windows", /^win/i.test(CLIENT_PLATFORM));
 const PUBLIC_GROUP_ID = "public";
 const PUBLIC_GROUP_NAME = "公共大厅";
 const PUBLIC_GROUP_CONVERSATION = `group:${PUBLIC_GROUP_ID}`;
@@ -55,6 +57,7 @@ const CLIPBOARD_IMAGE_EXTENSIONS = new Map([
 const EMOJI_SEGMENTER = typeof Intl.Segmenter === "function"
   ? new Intl.Segmenter(undefined, { granularity: "grapheme" })
   : null;
+const EMOJI_GRAPHEME_PATTERN = /\p{Extended_Pictographic}|\p{Emoji_Presentation}|\p{Regional_Indicator}|\u20e3|\ufe0f/u;
 const EMOJI_BATCH_SIZE = 160;
 const EMOJI_OPTIONS = [
   "😀", "😃", "😄", "😁", "😆", "😅", "😂", "🤣",
@@ -414,6 +417,13 @@ const friendColorStatusEl = document.querySelector("#friend-color-status");
 const clearFriendMessagesEl = document.querySelector("#clear-friend-messages");
 const deleteFriendEl = document.querySelector("#delete-friend");
 const mediaMenuEl = document.querySelector("#media-menu");
+const pushPermissionDialogEl = document.querySelector("#push-permission-dialog");
+const pushPermissionTitleEl = document.querySelector("#push-permission-title");
+const pushPermissionDescriptionEl = document.querySelector("#push-permission-description");
+const pushPermissionGuideEl = document.querySelector("#push-permission-guide");
+const pushPermissionCloseEl = document.querySelector("#push-permission-close");
+const pushPermissionCancelEl = document.querySelector("#push-permission-cancel");
+const pushPermissionConfirmEl = document.querySelector("#push-permission-confirm");
 const forwardDialogEl = document.querySelector("#forward-dialog");
 const forwardCloseEl = document.querySelector("#forward-close");
 const forwardTargetsEl = document.querySelector("#forward-targets");
@@ -714,10 +724,36 @@ function formatFullMessageTime(sentAt) {
 function createExternalLink(label, url) {
   const link = document.createElement("a");
   link.href = url;
-  link.textContent = label;
+  appendEmojiText(link, label);
   link.target = "_blank";
   link.rel = "noopener noreferrer";
   return link;
+}
+
+function appendEmojiText(container, value) {
+  const text = String(value || "");
+  if (!EMOJI_SEGMENTER) {
+    container.append(document.createTextNode(text));
+    return;
+  }
+  let plainText = "";
+  const appendPlainText = () => {
+    if (!plainText) return;
+    container.append(document.createTextNode(plainText));
+    plainText = "";
+  };
+  for (const { segment } of EMOJI_SEGMENTER.segment(text)) {
+    if (!EMOJI_GRAPHEME_PATTERN.test(segment)) {
+      plainText += segment;
+      continue;
+    }
+    appendPlainText();
+    const emoji = document.createElement("span");
+    emoji.className = "emoji-glyph";
+    emoji.textContent = segment;
+    container.append(emoji);
+  }
+  appendPlainText();
 }
 
 function renderSignature(container, value) {
@@ -727,7 +763,7 @@ function renderSignature(container, value) {
   let match;
 
   while ((match = pattern.exec(value)) !== null) {
-    container.append(document.createTextNode(value.slice(cursor, match.index)));
+    appendEmojiText(container, value.slice(cursor, match.index));
     if (match[2]) {
       container.append(createExternalLink(match[1], match[2]));
     } else {
@@ -738,11 +774,11 @@ function renderSignature(container, value) {
         url = url.slice(0, -1);
       }
       container.append(createExternalLink(url, url));
-      if (trailing) container.append(document.createTextNode(trailing));
+      if (trailing) appendEmojiText(container, trailing);
     }
     cursor = pattern.lastIndex;
   }
-  container.append(document.createTextNode(value.slice(cursor)));
+  appendEmojiText(container, value.slice(cursor));
 }
 
 function setConversationMeta(status, signature = "") {
@@ -754,7 +790,7 @@ function setConversationMeta(status, signature = "") {
 
 function appendFormattedText(container, value) {
   if (!parseLatexEl.checked) {
-    container.textContent = value;
+    appendEmojiText(container, value);
     return;
   }
 
@@ -767,7 +803,7 @@ function appendFormattedText(container, value) {
       container.append(math);
       return;
     }
-    container.append(document.createTextNode(part));
+    appendEmojiText(container, part);
   });
 }
 
@@ -778,7 +814,7 @@ function largeEmojiFromText(value) {
   const singleGrapheme = EMOJI_SEGMENTER
     ? Array.from(EMOJI_SEGMENTER.segment(emoji)).length === 1
     : EMOJI_OPTIONS.includes(emoji);
-  const emojiLike = /\p{Extended_Pictographic}|\p{Emoji_Presentation}|\p{Regional_Indicator}|\u20e3/u.test(emoji);
+  const emojiLike = EMOJI_GRAPHEME_PATTERN.test(emoji);
   return singleGrapheme && emojiLike ? emoji : "";
 }
 
@@ -2668,6 +2704,45 @@ function pushNotificationsSupported() {
     && "PushManager" in window && "Notification" in window;
 }
 
+function pushPermissionBlockedMessage() {
+  return "通知权限已被浏览器阻止，请在网站设置中改为允许后重试";
+}
+
+function openPushPermissionDialog() {
+  const blocked = Notification.permission === "denied";
+  pushPermissionTitleEl.textContent = blocked ? "通知权限已被阻止" : "允许系统消息通知";
+  pushPermissionDescriptionEl.textContent = blocked
+    ? "浏览器不会再次弹出权限申请，需要先修改当前网站的通知权限。"
+    : "点击“继续开启”后，浏览器会在页面左上方弹出通知权限申请。";
+  pushPermissionGuideEl.textContent = blocked
+    ? "点击地址栏左侧的网站信息图标，将“通知”改为“允许”，返回后重新检测。"
+    : "请在浏览器弹窗中选择“允许”，这样网页关闭后也能收到新消息。";
+  pushPermissionConfirmEl.textContent = blocked ? "重新检测" : "继续开启";
+  pushPermissionDialogEl.hidden = false;
+  document.body.classList.add("modal-open");
+  pushPermissionConfirmEl.focus();
+}
+
+function closePushPermissionDialog(resetToggle = true) {
+  pushPermissionDialogEl.hidden = true;
+  document.body.classList.remove("modal-open");
+  if (resetToggle) pushNotificationsEl.checked = false;
+  pushNotificationsEl.focus();
+}
+
+function syncPushNotificationPermission() {
+  if (!pushRegistration || !pushPublicKey || !pushNotificationsSupported()) return;
+  pushNotificationsEl.disabled = false;
+  if (pushNotificationsEl.checked) return;
+  if (Notification.permission === "denied") {
+    setPushNotificationStatus(pushPermissionBlockedMessage(), true);
+  } else if (Notification.permission === "granted") {
+    setPushNotificationStatus("通知权限已允许，可再次勾选开启");
+  } else {
+    setPushNotificationStatus("未开启");
+  }
+}
+
 function waitForServiceWorkerActivation(registration) {
   if (registration.active) return Promise.resolve(registration);
   const worker = registration.installing || registration.waiting;
@@ -2714,11 +2789,11 @@ async function initializePushNotifications() {
       pushNotificationsEl.checked = true;
       setPushNotificationStatus("已在此设备开启");
     } else if (Notification.permission === "denied") {
-      setPushNotificationStatus("通知权限已被浏览器阻止", true);
+      setPushNotificationStatus(pushPermissionBlockedMessage(), true);
     } else {
       setPushNotificationStatus("未开启");
     }
-    pushNotificationsEl.disabled = Notification.permission === "denied";
+    pushNotificationsEl.disabled = false;
   } catch (error) {
     setPushNotificationStatus(error.message || "通知初始化失败", true);
   }
@@ -2727,7 +2802,8 @@ async function initializePushNotifications() {
 async function enablePushNotifications() {
   if (!pushRegistration || !pushPublicKey) throw new Error("消息通知尚未就绪");
   const permission = await Notification.requestPermission();
-  if (permission !== "granted") throw new Error("未获得通知权限");
+  if (permission === "denied") throw new Error(pushPermissionBlockedMessage());
+  if (permission !== "granted") throw new Error("尚未允许通知，可以再次勾选重试");
   let subscription = await pushRegistration.pushManager.getSubscription();
   if (!subscription) {
     subscription = await pushRegistration.pushManager.subscribe({
@@ -3560,22 +3636,53 @@ parseLatexEl.addEventListener("change", () => {
   persistSettings();
 });
 
-pushNotificationsEl.addEventListener("change", async () => {
+async function attemptEnablePushNotifications() {
   pushNotificationsEl.disabled = true;
   try {
-    if (pushNotificationsEl.checked) {
-      await enablePushNotifications();
-      setPushNotificationStatus("已在此设备开启");
-    } else {
-      await disablePushNotifications();
-      setPushNotificationStatus("未开启");
-    }
+    await enablePushNotifications();
+    setPushNotificationStatus("已在此设备开启");
   } catch (error) {
-    pushNotificationsEl.checked = !pushNotificationsEl.checked;
+    pushNotificationsEl.checked = false;
     setPushNotificationStatus(error.message || "通知设置失败", true);
   } finally {
-    pushNotificationsEl.disabled = Notification.permission === "denied";
+    pushNotificationsEl.disabled = false;
   }
+}
+
+pushNotificationsEl.addEventListener("change", async () => {
+  if (pushNotificationsEl.checked) {
+    if (Notification.permission === "granted") {
+      await attemptEnablePushNotifications();
+      return;
+    }
+    openPushPermissionDialog();
+    return;
+  }
+  pushNotificationsEl.disabled = true;
+  try {
+    await disablePushNotifications();
+    setPushNotificationStatus("未开启");
+  } catch (error) {
+    pushNotificationsEl.checked = true;
+    setPushNotificationStatus(error.message || "通知设置失败", true);
+  } finally {
+    pushNotificationsEl.disabled = false;
+  }
+});
+
+pushPermissionCloseEl.addEventListener("click", () => closePushPermissionDialog());
+pushPermissionCancelEl.addEventListener("click", () => closePushPermissionDialog());
+pushPermissionConfirmEl.addEventListener("click", async () => {
+  if (Notification.permission === "denied") {
+    closePushPermissionDialog();
+    setPushNotificationStatus(pushPermissionBlockedMessage(), true);
+    return;
+  }
+  closePushPermissionDialog(false);
+  await attemptEnablePushNotifications();
+});
+pushPermissionDialogEl.addEventListener("click", (event) => {
+  if (event.target === pushPermissionDialogEl) closePushPermissionDialog();
 });
 
 clearMessagesEl.addEventListener("click", async () => {
@@ -3689,6 +3796,11 @@ document.addEventListener("click", (event) => {
 });
 
 document.addEventListener("keydown", (event) => {
+  if (!pushPermissionDialogEl.hidden && event.key === "Escape") {
+    closePushPermissionDialog();
+    event.preventDefault();
+    return;
+  }
   if (!imageViewerEl.hidden) {
     if (event.key === "ArrowLeft") moveImageViewer(-1);
     else if (event.key === "ArrowRight") moveImageViewer(1);
@@ -3719,7 +3831,10 @@ if ("serviceWorker" in navigator) {
   navigator.serviceWorker.addEventListener("message", handleServiceWorkerMessage);
 }
 
-window.addEventListener("focus", () => setPageAttentionActive(true));
+window.addEventListener("focus", () => {
+  setPageAttentionActive(true);
+  syncPushNotificationPermission();
+});
 window.addEventListener("blur", () => setPageAttentionActive(false));
 window.addEventListener("pageshow", () => setPageAttentionActive(true));
 window.addEventListener("pagehide", () => setPageAttentionActive(false));

@@ -38,6 +38,7 @@ func TestPushSubscriptionAPIAndMessageDispatch(t *testing.T) {
 	for _, name := range []string{
 		"index.html", "styles.css", "app.js", "sw.js",
 		"assets/logo-oracle-vector.svg", "assets/logo-oracle-vector-unread.svg",
+		"assets/fonts/Noto-COLRv1.woff2",
 	} {
 		if err := os.MkdirAll(filepath.Dir(filepath.Join(directory, name)), 0o700); err != nil {
 			t.Fatal(err)

@@ -279,6 +279,23 @@
     <button class="danger" type="button" role="menuitem" data-media-action="remove-sticker">移除表情包</button>
   </div>
 
+  <div id="push-permission-dialog" class="modal-layer" role="dialog" aria-modal="true" aria-labelledby="push-permission-title" aria-describedby="push-permission-description push-permission-guide" hidden>
+    <section class="push-permission-dialog">
+      <header class="modal-header">
+        <h2 id="push-permission-title">允许系统消息通知</h2>
+        <button id="push-permission-close" class="modal-icon-button" type="button" aria-label="关闭" title="关闭">×</button>
+      </header>
+      <div class="push-permission-content">
+        <p id="push-permission-description">点击“继续开启”后，浏览器会在页面左上方弹出通知权限申请。</p>
+        <p id="push-permission-guide" class="push-permission-guide">请在浏览器弹窗中选择“允许”，这样网页关闭后也能收到新消息。</p>
+      </div>
+      <div class="push-permission-actions">
+        <button id="push-permission-cancel" type="button">暂不开启</button>
+        <button id="push-permission-confirm" class="command-button" type="button">继续开启</button>
+      </div>
+    </section>
+  </div>
+
   <div id="forward-dialog" class="modal-layer" role="dialog" aria-modal="true" aria-labelledby="forward-title" hidden>
     <section class="forward-dialog">
       <header class="modal-header">

@@ -1,3 +1,11 @@
+@font-face {
+  font-family: "Whisper Noto Color Emoji";
+  src: url("assets/fonts/Noto-COLRv1.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
 :root {
   color-scheme: dark;
   --chat-panel-width: 600px;
@@ -92,6 +100,23 @@ textarea {
   font-family: "DejaVu Sans Mono", "SFMono-Regular", Consolas, monospace;
   font-size: 14px;
   letter-spacing: 0;
+}
+
+html.platform-windows body,
+html.platform-windows button,
+html.platform-windows input,
+html.platform-windows select,
+html.platform-windows textarea {
+  font-family: "Cascadia Mono", Consolas, "Whisper Noto Color Emoji", "Microsoft YaHei UI", "Segoe UI", monospace;
+}
+
+html.platform-windows .emoji-glyph,
+html.platform-windows .emoji-option,
+html.platform-windows .message-large-emoji,
+html.platform-windows .message-sticker,
+html.platform-windows .sticker-option-visual {
+  font-family: "Whisper Noto Color Emoji", "Segoe UI Emoji", sans-serif;
+  font-synthesis: none;
 }
 
 button,
@@ -424,7 +449,7 @@ body[data-conversation-kind="profile"] .conversation-heading h1 {
   width: max-content;
   max-width: 100%;
   overflow-wrap: normal;
-  font-family: system-ui, sans-serif;
+  font-family: "Apple Color Emoji", "Segoe UI Emoji", system-ui, sans-serif;
   font-size: 72px;
   line-height: 1.15;
   white-space: normal;
@@ -1202,7 +1227,7 @@ body[data-conversation-kind="profile"] .conversation-heading h1 {
 .emoji-option {
   aspect-ratio: 1;
   border-radius: 4px;
-  font-family: system-ui, sans-serif;
+  font-family: "Apple Color Emoji", "Segoe UI Emoji", system-ui, sans-serif;
   font-size: 22px;
 }
 
@@ -1236,7 +1261,7 @@ body[data-conversation-kind="profile"] .conversation-heading h1 {
 }
 
 .sticker-option-visual {
-  font-family: system-ui, sans-serif;
+  font-family: "Apple Color Emoji", "Segoe UI Emoji", system-ui, sans-serif;
   font-size: 52px;
   line-height: 1;
 }
@@ -1648,7 +1673,8 @@ body.modal-open {
   background: rgb(0 0 0 / 0.58);
 }
 
-.forward-dialog {
+.forward-dialog,
+.push-permission-dialog {
   width: min(420px, 100%);
   max-height: min(620px, calc(100vh - 32px));
   overflow: hidden;
@@ -1656,6 +1682,38 @@ body.modal-open {
   border-radius: 6px;
   background: var(--panel);
   box-shadow: 0 18px 52px rgb(0 0 0 / 0.38);
+}
+
+.push-permission-content {
+  padding: 1em;
+  line-height: 1.6;
+}
+
+.push-permission-content p {
+  margin: 0;
+}
+
+.push-permission-guide {
+  padding: 0.7em 0.85em;
+  margin-top: 1em !important;
+  border-left: 3px solid var(--accent);
+  color: var(--strong);
+  background: var(--button-hover);
+}
+
+.push-permission-actions {
+  display: flex;
+  min-height: 58px;
+  padding: 0.75em 1em;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.75em;
+  border-top: 1px solid var(--line);
+}
+
+.push-permission-actions button {
+  min-height: 34px;
+  padding: 0.45em 0.75em;
 }
 
 .modal-header {

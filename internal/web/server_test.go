@@ -30,7 +30,12 @@ func newTestServer(t *testing.T) (*httptest.Server, *http.Client) {
 func newTestServerWithObjects(t *testing.T, objects blob.Store) (*httptest.Server, *http.Client) {
 	t.Helper()
 	directory := t.TempDir()
-	for _, name := range []string{"index.html", "styles.css", "app.js"} {
+	for _, name := range []string{
+		"index.html", "styles.css", "app.js", "assets/fonts/Noto-COLRv1.woff2",
+	} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(directory, name)), 0o700); err != nil {
+			t.Fatal(err)
+		}
 		if err := os.WriteFile(filepath.Join(directory, name), []byte(name), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -50,6 +55,23 @@ func newTestServerWithObjects(t *testing.T, objects blob.Store) (*httptest.Serve
 		t.Fatal(err)
 	}
 	return server, &http.Client{Jar: jar}
+}
+
+func TestSelfHostedEmojiFont(t *testing.T) {
+	server, client := newTestServer(t)
+	defer server.Close()
+
+	response, err := client.Get(server.URL + "/assets/fonts/Noto-COLRv1.woff2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("font status = %d", response.StatusCode)
+	}
+	if contentType := response.Header.Get("Content-Type"); contentType != "font/woff2" {
+		t.Fatalf("font content type = %q", contentType)
+	}
 }
 
 type fakeObjectStore struct {

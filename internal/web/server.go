@@ -502,6 +502,7 @@ func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {
 		"/styles.css": "/styles.css", "/app.js": "/app.js", "/sw.js": "/sw.js",
 		"/assets/logo-oracle-vector.svg":        "/assets/logo-oracle-vector.svg",
 		"/assets/logo-oracle-vector-unread.svg": "/assets/logo-oracle-vector-unread.svg",
+		"/assets/fonts/Noto-COLRv1.woff2":       "/assets/fonts/Noto-COLRv1.woff2",
 	}
 	name, ok := files[r.URL.Path]
 	if !ok {
