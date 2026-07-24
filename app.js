@@ -3,6 +3,8 @@ const RESERVED_NICKNAME = "coco";
 const PUBLIC_GROUP_ID = "public";
 const PUBLIC_GROUP_NAME = "公共大厅";
 const PUBLIC_GROUP_CONVERSATION = `group:${PUBLIC_GROUP_ID}`;
+const APP_BASE_URL = new URL("./", document.currentScript?.src || window.location.href);
+const APP_BASE_SCOPE = APP_BASE_URL.pathname;
 const DEFAULT_DOCUMENT_TITLE = document.title;
 const NEW_MESSAGE_TITLE = `【新消息】${DEFAULT_DOCUMENT_TITLE}    `;
 const NORMAL_FAVICON = "logo-oracle-vector.svg";
@@ -46,6 +48,13 @@ const CONTENT_TYPE_ALIASES = new Map([
   ["audio/mp3", "audio/mpeg"], ["audio/x-m4a", "audio/mp4"],
   ["audio/x-aac", "audio/aac"], ["application/x-pdf", "application/pdf"]
 ]);
+const CLIPBOARD_IMAGE_EXTENSIONS = new Map([
+  ["image/gif", "gif"], ["image/jpeg", "jpg"], ["image/png", "png"],
+  ["image/webp", "webp"], ["image/bmp", "bmp"], ["image/tiff", "tiff"]
+]);
+const EMOJI_SEGMENTER = typeof Intl.Segmenter === "function"
+  ? new Intl.Segmenter(undefined, { granularity: "grapheme" })
+  : null;
 const EMOJI_BATCH_SIZE = 160;
 const EMOJI_OPTIONS = [
   "😀", "😃", "😄", "😁", "😆", "😅", "😂", "🤣",
@@ -762,6 +771,17 @@ function appendFormattedText(container, value) {
   });
 }
 
+function largeEmojiFromText(value) {
+  const text = String(value || "").trim();
+  if (!text.startsWith("#")) return "";
+  const emoji = text.slice(1);
+  const singleGrapheme = EMOJI_SEGMENTER
+    ? Array.from(EMOJI_SEGMENTER.segment(emoji)).length === 1
+    : EMOJI_OPTIONS.includes(emoji);
+  const emojiLike = /\p{Extended_Pictographic}|\p{Emoji_Presentation}|\p{Regional_Indicator}|\u20e3/u.test(emoji);
+  return singleGrapheme && emojiLike ? emoji : "";
+}
+
 function stickerById(id) {
   return LEGACY_STICKERS.find((sticker) => sticker.id === id) || null;
 }
@@ -872,26 +892,35 @@ async function removeAttachmentDraft(draft) {
 }
 
 function addAttachmentFiles(files) {
+  if (composerSending) {
+    setComposerStatus("请等待当前消息发送完成");
+    return false;
+  }
+  if (!backendEnabled || !state.uploadsEnabled) {
+    setComposerStatus("服务器尚未配置文件上传");
+    return false;
+  }
   const drafts = currentAttachmentDrafts();
   const selected = Array.from(files);
+  if (selected.length === 0) return false;
   if (drafts.length + selected.length > MAX_ATTACHMENTS_PER_MESSAGE) {
     setComposerStatus(`每条消息最多添加${MAX_ATTACHMENTS_PER_MESSAGE}个文件`);
-    return;
+    return false;
   }
   let totalSize = drafts.reduce((total, draft) => total + draft.file.size, 0);
   for (const file of selected) {
     if (file.size <= 0) {
       setComposerStatus(`${file.name} 是空文件`);
-      return;
+      return false;
     }
     if (file.size > MAX_ATTACHMENT_SIZE) {
       setComposerStatus(`${file.name} 超过50 MB`);
-      return;
+      return false;
     }
     totalSize += file.size;
     if (totalSize > MAX_ATTACHMENT_TOTAL_SIZE) {
       setComposerStatus("每条消息的文件总大小不能超过100 MB");
-      return;
+      return false;
     }
   }
   selected.forEach((file) => {
@@ -907,6 +936,37 @@ function addAttachmentFiles(files) {
   setComposerStatus();
   renderAttachmentDrafts();
   resizeInput();
+  return true;
+}
+
+function clipboardImageFile(file, index) {
+  if (file.name) return file;
+  const contentType = baseContentType(file.type);
+  const extension = CLIPBOARD_IMAGE_EXTENSIONS.get(contentType) || "img";
+  const timestamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+$/, "");
+  return new File([file], `clipboard-${timestamp}-${index + 1}.${extension}`, {
+    type: file.type,
+    lastModified: file.lastModified || Date.now()
+  });
+}
+
+function clipboardImageFiles(clipboardData) {
+  return Array.from(clipboardData?.items || [])
+    .filter((item) => item.kind === "file")
+    .map((item) => item.getAsFile())
+    .filter((file) => file && baseContentType(file.type).startsWith("image/"))
+    .map(clipboardImageFile);
+}
+
+function dataTransferContainsFiles(dataTransfer) {
+  return Array.from(dataTransfer?.types || []).includes("Files");
+}
+
+function dataTransferContainsDirectory(dataTransfer) {
+  return Array.from(dataTransfer?.items || []).some((item) => {
+    if (item.kind !== "file" || typeof item.webkitGetAsEntry !== "function") return false;
+    return Boolean(item.webkitGetAsEntry()?.isDirectory);
+  });
 }
 
 function setPickerTab(name, openFileDialog = false) {
@@ -1641,7 +1701,15 @@ function renderMessages() {
       if (!message.system && message.from !== state.currentUser && friendColor) {
         text.dataset.friendColor = friendColor;
       }
-      appendFormattedText(text, message.text);
+      const largeEmoji = message.system ? "" : largeEmojiFromText(message.text);
+      if (largeEmoji) {
+        text.classList.add("message-large-emoji");
+        text.textContent = largeEmoji;
+        text.setAttribute("role", "img");
+        text.setAttribute("aria-label", largeEmoji);
+      } else {
+        appendFormattedText(text, message.text);
+      }
       content.append(text);
     }
 
@@ -2600,6 +2668,25 @@ function pushNotificationsSupported() {
     && "PushManager" in window && "Notification" in window;
 }
 
+function waitForServiceWorkerActivation(registration) {
+  if (registration.active) return Promise.resolve(registration);
+  const worker = registration.installing || registration.waiting;
+  if (!worker) return Promise.reject(new Error("Service Worker 尚未就绪"));
+  return new Promise((resolve, reject) => {
+    const handleStateChange = () => {
+      if (worker.state === "activated") {
+        worker.removeEventListener("statechange", handleStateChange);
+        resolve(registration);
+      } else if (worker.state === "redundant") {
+        worker.removeEventListener("statechange", handleStateChange);
+        reject(new Error("Service Worker 激活失败"));
+      }
+    };
+    worker.addEventListener("statechange", handleStateChange);
+    handleStateChange();
+  });
+}
+
 async function initializePushNotifications() {
   pushNotificationsEl.disabled = true;
   pushNotificationsEl.checked = false;
@@ -2614,8 +2701,11 @@ async function initializePushNotifications() {
       return;
     }
     pushPublicKey = config.publicKey;
-    pushRegistration = await navigator.serviceWorker.register("/sw.js", { scope: "/" });
-    pushRegistration = await navigator.serviceWorker.ready;
+    pushRegistration = await navigator.serviceWorker.register(
+      new URL("sw.js", APP_BASE_URL).href,
+      { scope: APP_BASE_SCOPE }
+    );
+    pushRegistration = await waitForServiceWorkerActivation(pushRegistration);
     const subscription = await pushRegistration.pushManager.getSubscription();
     if (subscription) {
       await apiRequest("/api/push/subscription", {
@@ -2656,7 +2746,7 @@ async function enablePushNotifications() {
 
 async function disablePushNotifications() {
   if (!pushRegistration && "serviceWorker" in navigator) {
-    pushRegistration = await navigator.serviceWorker.getRegistration("/");
+    pushRegistration = await navigator.serviceWorker.getRegistration(APP_BASE_URL.href);
   }
   if (!pushRegistration) return;
   const subscription = await pushRegistration.pushManager.getSubscription();
@@ -3074,6 +3164,62 @@ attachmentFileInputEl.addEventListener("change", () => {
   setContentPicker(false);
   inputEl.focus();
 });
+
+inputEl.addEventListener("paste", (event) => {
+  const files = clipboardImageFiles(event.clipboardData);
+  if (files.length === 0) return;
+  event.preventDefault();
+  addAttachmentFiles(files);
+});
+
+let composerFileDragDepth = 0;
+
+function resetComposerFileDrag() {
+  composerFileDragDepth = 0;
+  formEl.classList.remove("file-drag-active");
+}
+
+formEl.addEventListener("dragenter", (event) => {
+  if (!dataTransferContainsFiles(event.dataTransfer)) return;
+  event.preventDefault();
+  composerFileDragDepth += 1;
+  if (state.uploadsEnabled && !composerSending) formEl.classList.add("file-drag-active");
+});
+
+formEl.addEventListener("dragover", (event) => {
+  if (!dataTransferContainsFiles(event.dataTransfer)) return;
+  event.preventDefault();
+  event.dataTransfer.dropEffect = "copy";
+});
+
+formEl.addEventListener("dragleave", (event) => {
+  if (!dataTransferContainsFiles(event.dataTransfer)) return;
+  composerFileDragDepth = Math.max(0, composerFileDragDepth - 1);
+  if (composerFileDragDepth === 0) formEl.classList.remove("file-drag-active");
+});
+
+formEl.addEventListener("drop", (event) => {
+  if (!dataTransferContainsFiles(event.dataTransfer)) return;
+  event.preventDefault();
+  resetComposerFileDrag();
+  if (dataTransferContainsDirectory(event.dataTransfer)) {
+    setComposerStatus("暂不支持拖入文件夹，请拖入文件");
+    return;
+  }
+  addAttachmentFiles(event.dataTransfer.files || []);
+  inputEl.focus();
+});
+
+document.addEventListener("dragover", (event) => {
+  if (dataTransferContainsFiles(event.dataTransfer)) event.preventDefault();
+});
+
+document.addEventListener("drop", (event) => {
+  if (dataTransferContainsFiles(event.dataTransfer)) event.preventDefault();
+  resetComposerFileDrag();
+});
+
+document.addEventListener("dragend", resetComposerFileDrag);
 
 stickerFileInputEl.addEventListener("change", () => {
   const files = stickerFileInputEl.files ? Array.from(stickerFileInputEl.files) : [];

@@ -419,6 +419,17 @@ body[data-conversation-kind="profile"] .conversation-heading h1 {
   margin: 0;
 }
 
+.message-large-emoji {
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  overflow-wrap: normal;
+  font-family: system-ui, sans-serif;
+  font-size: 72px;
+  line-height: 1.15;
+  white-space: normal;
+}
+
 .message-sticker {
   display: block;
   width: max-content;
@@ -965,6 +976,24 @@ body[data-conversation-kind="profile"] .conversation-heading h1 {
   display: flex;
   min-width: 0;
   flex-direction: column;
+}
+
+.composer-drop-hint {
+  position: absolute;
+  z-index: 40;
+  inset: -1px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed var(--private);
+  background: var(--panel);
+  color: var(--strong);
+  gap: 0.55em;
+  pointer-events: none;
+}
+
+#chatform.file-drag-active .composer-drop-hint {
+  display: flex;
 }
 
 #chatinput {
