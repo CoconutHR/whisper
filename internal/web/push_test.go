@@ -37,9 +37,11 @@ func TestPushSubscriptionAPIAndMessageDispatch(t *testing.T) {
 	directory := t.TempDir()
 	for _, name := range []string{
 		"index.html", "styles.css", "app.js", "sw.js",
-		"logo-oracle.svg", "logo-oracle-unread.svg",
-		"logo-oracle-vector.svg", "logo-oracle-vector-unread.svg",
+		"assets/logo-oracle-vector.svg", "assets/logo-oracle-vector-unread.svg",
 	} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(directory, name)), 0o700); err != nil {
+			t.Fatal(err)
+		}
 		if err := os.WriteFile(filepath.Join(directory, name), []byte(name), 0o600); err != nil {
 			t.Fatal(err)
 		}

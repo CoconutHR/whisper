@@ -26,8 +26,8 @@ async function handlePush(event) {
   const conversation = typeof message.conversation === "string" ? message.conversation : "";
   await self.registration.showNotification(message.title || "耳语", {
     body: message.body || "收到一条新消息",
-    icon: appURL("logo-oracle-vector-unread.svg"),
-    badge: appURL("logo-oracle-vector-unread.svg"),
+    icon: appURL("assets/logo-oracle-vector-unread.svg"),
+    badge: appURL("assets/logo-oracle-vector-unread.svg"),
     tag: NOTIFICATION_TAG_PREFIX + (conversation || message.messageId || "message"),
     renotify: true,
     data: { conversation },

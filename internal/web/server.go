@@ -500,9 +500,8 @@ func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {
 	files := map[string]string{
 		"/": "/index.html", "/index.html": "/index.html",
 		"/styles.css": "/styles.css", "/app.js": "/app.js", "/sw.js": "/sw.js",
-		"/logo-oracle.svg": "/logo-oracle.svg", "/logo-oracle-unread.svg": "/logo-oracle-unread.svg",
-		"/logo-oracle-vector.svg":        "/logo-oracle-vector.svg",
-		"/logo-oracle-vector-unread.svg": "/logo-oracle-vector-unread.svg",
+		"/assets/logo-oracle-vector.svg":        "/assets/logo-oracle-vector.svg",
+		"/assets/logo-oracle-vector-unread.svg": "/assets/logo-oracle-vector-unread.svg",
 	}
 	name, ok := files[r.URL.Path]
 	if !ok {
