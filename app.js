@@ -298,6 +298,7 @@ const state = {
   uploadsEnabled: false,
   stickers: [],
   attachmentDrafts: [],
+  messageDrafts: new Map(),
   friends: new Set([RESERVED_NICKNAME]),
   friendColors: loadStoredFriendColors(),
   unreadCounts: new Map(),
@@ -1091,15 +1092,30 @@ function updateUploadControls() {
   renderContentPickerOptions();
 }
 
+function setMessageDraft(conversationId, value) {
+  if (!state.conversations[conversationId]) return;
+  if (value) state.messageDrafts.set(conversationId, value);
+  else state.messageDrafts.delete(conversationId);
+}
+
+function saveCurrentMessageDraft() {
+  setMessageDraft(state.currentConversation, inputEl.value);
+}
+
+function restoreMessageDraft(conversationId) {
+  inputEl.value = state.messageDrafts.get(conversationId) || "";
+}
+
 function switchConversation(conversationId) {
   const groupSettingsId = groupIdFromSettings(conversationId);
   const allowedPanel = conversationId === "self" || conversationId === "group-create"
     || (groupSettingsId && state.groups.has(groupSettingsId));
   if (!allowedPanel && !state.conversations[conversationId]) return;
 
+  saveCurrentMessageDraft();
   clearConversationUnread(conversationId);
   state.currentConversation = conversationId;
-  inputEl.value = "";
+  restoreMessageDraft(conversationId);
   setContentPicker(false);
   setComposerStatus();
   renderAttachmentDrafts();
@@ -1123,6 +1139,7 @@ function switchConversation(conversationId) {
 function mentionInGroup(name) {
   if (!isGroupConversation()) return;
   inputEl.value = `@${name} `;
+  saveCurrentMessageDraft();
   resizeInput();
   inputEl.focus();
   inputEl.setSelectionRange(inputEl.value.length, inputEl.value.length);
@@ -2279,7 +2296,8 @@ function reconcileAttachmentDrafts() {
 async function sendCurrentMessage() {
   if (state.currentConversation === "self" || isGroupCreateConversation() || isGroupSettingsConversation()) return;
   if (composerSending) return;
-  const text = inputEl.value.trim();
+  const rawText = inputEl.value;
+  const text = rawText.trim();
   const drafts = currentAttachmentDrafts();
   if (!text && drafts.length === 0) return;
   if (drafts.length > 0 && (!backendEnabled || !state.uploadsEnabled)) {
@@ -2288,12 +2306,18 @@ async function sendCurrentMessage() {
   }
 
   const destination = messageDestination();
+  setMessageDraft(destination.conversationId, rawText);
   setComposerStatus();
   setComposerSending(true);
   try {
     const attachmentIds = await Promise.all(drafts.map(uploadAttachmentDraft));
     await sendPreparedMessage({ text, attachmentIds }, destination);
-    inputEl.value = "";
+    if (state.messageDrafts.get(destination.conversationId) === rawText) {
+      state.messageDrafts.delete(destination.conversationId);
+    }
+    if (state.currentConversation === destination.conversationId && inputEl.value === rawText) {
+      inputEl.value = "";
+    }
     clearSentAttachmentDrafts(destination.conversationId);
     resizeInput();
   } catch (error) {
@@ -2866,6 +2890,9 @@ function showAuthUI(message = "") {
   backendAuthenticated = false;
   closeSocket();
   clearLocalAttachmentDrafts();
+  state.messageDrafts.clear();
+  inputEl.value = "";
+  resizeInput();
   setContentPicker(false);
   resetUnreadState();
   authPanelEl.hidden = false;
@@ -2913,12 +2940,16 @@ function applyGroupView(group) {
 }
 
 function removeGroup(groupId) {
+  const conversationId = groupConversationIdFor(groupId);
+  state.messageDrafts.delete(conversationId);
   state.groups.delete(groupId);
-  delete state.conversations[groupConversationIdFor(groupId)];
-  clearConversationUnread(groupConversationIdFor(groupId));
-  if (state.currentConversation === groupConversationIdFor(groupId)
+  delete state.conversations[conversationId];
+  clearConversationUnread(conversationId);
+  if (state.currentConversation === conversationId
     || state.currentConversation === groupSettingsIdFor(groupId)) {
     state.currentConversation = PUBLIC_GROUP_CONVERSATION;
+    restoreMessageDraft(PUBLIC_GROUP_CONVERSATION);
+    resizeInput();
   }
 }
 
@@ -2992,6 +3023,10 @@ function renameRemoteMember(previousName, memberView) {
   if (previousKey !== nextKey) {
     state.conversations[nextKey] = state.conversations[previousKey] || [];
     delete state.conversations[previousKey];
+    if (state.messageDrafts.has(previousKey)) {
+      state.messageDrafts.set(nextKey, state.messageDrafts.get(previousKey));
+      state.messageDrafts.delete(previousKey);
+    }
     if (state.friends.delete(previousName)) state.friends.add(memberView.name);
     if (state.friendColors.has(previousName)) {
       state.friendColors.set(memberView.name, state.friendColors.get(previousName));
@@ -3389,7 +3424,10 @@ inputEl.addEventListener("keydown", (event) => {
   }
 });
 
-inputEl.addEventListener("input", resizeInput);
+inputEl.addEventListener("input", () => {
+  saveCurrentMessageDraft();
+  resizeInput();
+});
 backToGroupEl.addEventListener("click", () => {
   if (isGroupSettingsConversation()) switchConversation(groupConversationIdFor(groupIdFromSettings()));
   else switchConversation(PUBLIC_GROUP_CONVERSATION);
