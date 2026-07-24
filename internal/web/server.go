@@ -509,6 +509,9 @@ func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	if name == "/index.html" || name == "/styles.css" || name == "/app.js" {
+		w.Header().Set("Cache-Control", "no-cache")
+	}
 	if name == "/sw.js" {
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Service-Worker-Allowed", "/")

@@ -107,7 +107,7 @@ html.platform-windows button,
 html.platform-windows input,
 html.platform-windows select,
 html.platform-windows textarea {
-  font-family: "Cascadia Mono", Consolas, "Whisper Noto Color Emoji", "Microsoft YaHei UI", "Segoe UI", monospace;
+  font-family: "Cascadia Mono", Consolas, "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", monospace;
 }
 
 html.platform-windows .emoji-glyph,

@@ -31,7 +31,7 @@ func newTestServerWithObjects(t *testing.T, objects blob.Store) (*httptest.Serve
 	t.Helper()
 	directory := t.TempDir()
 	for _, name := range []string{
-		"index.html", "styles.css", "app.js", "assets/fonts/Noto-COLRv1.woff2",
+		"index.html", "styles.css", "app.js", "sw.js", "assets/fonts/Noto-COLRv1.woff2",
 	} {
 		if err := os.MkdirAll(filepath.Dir(filepath.Join(directory, name)), 0o700); err != nil {
 			t.Fatal(err)
@@ -71,6 +71,22 @@ func TestSelfHostedEmojiFont(t *testing.T) {
 	}
 	if contentType := response.Header.Get("Content-Type"); contentType != "font/woff2" {
 		t.Fatalf("font content type = %q", contentType)
+	}
+}
+
+func TestStaticAppAssetsRequireRevalidation(t *testing.T) {
+	server, client := newTestServer(t)
+	defer server.Close()
+
+	for _, path := range []string{"/", "/index.html", "/styles.css", "/app.js", "/sw.js"} {
+		response, err := client.Get(server.URL + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		_ = response.Body.Close()
+		if cacheControl := response.Header.Get("Cache-Control"); cacheControl != "no-cache" {
+			t.Errorf("GET %s Cache-Control = %q", path, cacheControl)
+		}
 	}
 }
 
