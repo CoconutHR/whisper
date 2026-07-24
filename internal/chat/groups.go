@@ -371,8 +371,15 @@ func (s *Store) UpdateGroup(ownerID, groupID, name, signature string, historyVis
 				return GroupMutation{}, GroupView{}, err
 			}
 		}
+		if err := seedLatestConversationReadTx(tx, id, GroupConversationKey(groupID)); err != nil {
+			return GroupMutation{}, GroupView{}, err
+		}
 	}
 	for _, id := range removed {
+		if _, err := tx.Exec(`DELETE FROM conversation_reads WHERE user_id = ? AND conversation_key = ?`,
+			id, GroupConversationKey(groupID)); err != nil {
+			return GroupMutation{}, GroupView{}, err
+		}
 		removedUser, err := userByID(tx, id)
 		if err != nil {
 			return GroupMutation{}, GroupView{}, err
@@ -481,6 +488,10 @@ func (s *Store) LeaveGroup(userID, groupID string) (GroupMutation, error) {
 	if _, err := tx.Exec(`DELETE FROM group_members WHERE group_id = ? AND user_id = ?`, groupID, userID); err != nil {
 		return GroupMutation{}, err
 	}
+	if _, err := tx.Exec(`DELETE FROM conversation_reads WHERE user_id = ? AND conversation_key = ?`,
+		userID, GroupConversationKey(groupID)); err != nil {
+		return GroupMutation{}, err
+	}
 	if err := insertGroupSystemMessageTx(tx, groupID, fmt.Sprintf("%s 退出了群聊。", user.Name), time.Now()); err != nil {
 		return GroupMutation{}, err
 	}
@@ -521,6 +532,9 @@ func (s *Store) DissolveGroup(ownerID, groupID string) (GroupMutation, error) {
 		return GroupMutation{}, err
 	}
 	if _, err := tx.Exec(`DELETE FROM cleared_at WHERE conversation_key = ?`, GroupConversationKey(groupID)); err != nil {
+		return GroupMutation{}, err
+	}
+	if _, err := tx.Exec(`DELETE FROM conversation_reads WHERE conversation_key = ?`, GroupConversationKey(groupID)); err != nil {
 		return GroupMutation{}, err
 	}
 	if _, err := tx.Exec(`DELETE FROM groups WHERE id = ?`, groupID); err != nil {

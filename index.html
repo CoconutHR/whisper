@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#20201d">
   <title>耳语 · whisper</title>
+  <link id="app-favicon" rel="icon" href="logo-oracle-vector.svg" type="image/svg+xml">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body data-theme="dune">
@@ -94,6 +95,11 @@
         <p>
           <input id="parse-latex" type="checkbox" checked>
           <label for="parse-latex">解析数学公式</label>
+        </p>
+        <p class="notification-setting">
+          <input id="push-notifications" type="checkbox" disabled>
+          <label for="push-notifications">系统消息通知</label>
+          <span id="push-notification-status" class="form-status" role="status"></span>
         </p>
         <label class="field" for="scheme-selector">
           <span>配色方案</span>

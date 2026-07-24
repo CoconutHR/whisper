@@ -166,6 +166,39 @@ func TestAuthenticationAndWebSocketMessage(t *testing.T) {
 	t.Fatal("group message event not received")
 }
 
+func TestConversationReadAPI(t *testing.T) {
+	server, client := newTestServer(t)
+	defer server.Close()
+	response := jsonRequest(t, client, http.MethodPost, server.URL+"/api/register", map[string]string{
+		"name": "reader", "password": "password123",
+	})
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusCreated {
+		t.Fatalf("register status = %d", response.StatusCode)
+	}
+
+	response, err := client.Get(server.URL + "/api/bootstrap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var bootstrap chat.Bootstrap
+	if err := json.NewDecoder(response.Body).Decode(&bootstrap); err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	cocoMessages := bootstrap.Conversations["dm:coco"]
+	if len(cocoMessages) == 0 {
+		t.Fatal("missing welcome message")
+	}
+	response = jsonRequest(t, client, http.MethodPost, server.URL+"/api/conversations/read", map[string]string{
+		"conversation": "dm:coco", "messageId": cocoMessages[len(cocoMessages)-1].ID,
+	})
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("read status = %d", response.StatusCode)
+	}
+}
+
 func TestWebSocketMessageRecall(t *testing.T) {
 	server, client := newTestServer(t)
 	defer server.Close()

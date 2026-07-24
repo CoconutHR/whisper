@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>耳语 logo 预览</title>
+  <link id="preview-favicon" rel="icon" type="image/svg+xml">
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #20201d;
+      --panel: #292824;
+      --line: #3a3933;
+      --text: #a6a28c;
+      --muted: #7d7a68;
+      --strong: #e8e4cf;
+      --accent: #60ac39;
+      --private: #6684e1;
+      --alert: #d73737;
+      --logo-ink: #20201d;
+      --logo-main: var(--accent);
+    }
+
+    body[data-theme="ocean"] {
+      color-scheme: dark;
+      --bg: #172126;
+      --panel: #223138;
+      --line: #34444b;
+      --text: #a8bdc5;
+      --muted: #71878f;
+      --strong: #e0edf1;
+      --accent: #5fb3a1;
+      --private: #6aa4d9;
+      --alert: #df6c75;
+      --logo-ink: #172126;
+      --logo-main: var(--accent);
+    }
+
+    body[data-theme="paper"] {
+      color-scheme: light;
+      --bg: #f7f7f4;
+      --panel: #e9e9e3;
+      --line: #d3d3cc;
+      --text: #363832;
+      --muted: #777a70;
+      --strong: #151711;
+      --accent: #397a45;
+      --private: #2f67a2;
+      --alert: #a83434;
+      --logo-ink: #f7f7f4;
+      --logo-main: var(--accent);
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      min-height: 100vh;
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.5 "DejaVu Sans Mono", "SFMono-Regular", Consolas, monospace;
+    }
+
+    main {
+      width: min(780px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 48px 0 64px;
+    }
+
+    h1, h2, p { margin: 0; }
+    h1 { color: var(--strong); font-size: 18px; }
+    h2 { color: var(--strong); font-size: 14px; }
+    header { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 32px; }
+    header p { color: var(--muted); font-size: 12px; }
+
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      margin-bottom: 28px;
+    }
+
+    .control-label { margin-right: 4px; color: var(--muted); font-size: 12px; }
+    button {
+      padding: 6px 10px;
+      border: 1px solid var(--line);
+      border-radius: 2px;
+      background: transparent;
+      color: var(--text);
+      font: inherit;
+      cursor: pointer;
+    }
+    button:hover, button:focus-visible { border-color: var(--private); color: var(--strong); outline: none; }
+    button[aria-pressed="true"] { border-color: var(--accent); color: var(--strong); box-shadow: inset 0 -2px 0 var(--accent); }
+
+    .preview-stage {
+      display: grid;
+      min-height: 310px;
+      place-items: center;
+      border: 1px solid var(--line);
+      background: var(--panel);
+    }
+    .logo-art {
+      width: 220px;
+      height: 220px;
+      filter: drop-shadow(0 0 0 transparent);
+    }
+    .logo-shell { fill: var(--logo-main); }
+    .logo-signal { stroke: var(--logo-ink); }
+    .preview-stage[data-state="unread"] .logo-art {
+      filter: drop-shadow(0 0 9px color-mix(in srgb, var(--alert) 70%, transparent));
+      animation: logo-breathe 1.4s ease-in-out infinite;
+    }
+    .preview-stage[data-state="unread"] .logo-shell { fill: var(--alert); }
+    .preview-stage[data-state="unread"] .logo-signal { stroke: var(--logo-ink); }
+    @keyframes logo-breathe {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.045); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .preview-stage[data-state="unread"] .logo-art { animation: none; }
+    }
+
+    .samples {
+      display: flex;
+      align-items: end;
+      gap: 24px;
+      min-height: 96px;
+      padding-top: 28px;
+    }
+    .sample { display: grid; gap: 8px; justify-items: center; color: var(--muted); font-size: 11px; }
+    .sample-icon { display: block; width: 48px; height: 48px; }
+    .sample-icon.small { width: 32px; height: 32px; }
+    .sample-icon.tiny { width: 16px; height: 16px; }
+    .sample-icon.unread { --logo-main: var(--alert); }
+
+    .note { margin-top: 26px; color: var(--muted); font-size: 12px; }
+    @media (max-width: 520px) {
+      main { width: min(100% - 20px, 780px); padding-top: 28px; }
+      header { display: block; }
+      header p { margin-top: 6px; }
+      .preview-stage { min-height: 240px; }
+      .logo-art { width: 170px; height: 170px; }
+    }
+  </style>
+</head>
+<body data-theme="dune">
+  <main>
+    <header>
+      <h1>耳语 / logo preview</h1>
+      <p>对话框 + 静音信号 + 现有主题色</p>
+    </header>
+
+    <div class="controls" aria-label="logo preview controls">
+      <span class="control-label">状态</span>
+      <button type="button" data-state="normal" aria-pressed="true">正常</button>
+      <button type="button" data-state="unread" aria-pressed="false">新消息</button>
+      <span class="control-label">主题</span>
+      <button type="button" data-theme="dune" aria-pressed="true">沙丘</button>
+      <button type="button" data-theme="ocean" aria-pressed="false">海洋</button>
+      <button type="button" data-theme="paper" aria-pressed="false">纸张</button>
+    </div>
+
+    <section class="preview-stage" data-state="normal" aria-label="logo large preview">
+      <svg class="logo-art" viewBox="0 0 64 64" aria-label="耳语 logo" role="img">
+        <path class="logo-shell" d="M11 9h42c5.523 0 10 4.477 10 10v21c0 5.523-4.477 10-10 10H30L16 59V50H11C5.477 50 1 45.523 1 40V19C1 13.477 5.477 9 11 9Z"/>
+        <path class="logo-signal" d="m17 23 7 7-7 7M31 37h11" fill="none" stroke-linecap="square" stroke-linejoin="miter" stroke-width="4"/>
+      </svg>
+    </section>
+
+    <div class="samples" aria-label="favicon size preview">
+      <div class="sample">
+        <svg class="sample-icon" viewBox="0 0 64 64" aria-hidden="true"><use href="#logo-shape"/></svg>
+        <span>48px</span>
+      </div>
+      <div class="sample">
+        <svg class="sample-icon small" viewBox="0 0 64 64" aria-hidden="true"><use href="#logo-shape"/></svg>
+        <span>32px</span>
+      </div>
+      <div class="sample">
+        <svg class="sample-icon tiny" viewBox="0 0 64 64" aria-hidden="true"><use href="#logo-shape"/></svg>
+        <span>16px favicon</span>
+      </div>
+      <div class="sample">
+        <svg class="sample-icon unread" viewBox="0 0 64 64" aria-hidden="true"><use href="#logo-shape"/></svg>
+        <span>未读状态</span>
+      </div>
+    </div>
+    <p class="note">未读状态保留同一几何轮廓，只切换为项目的 alert 色；大预览中的呼吸动画只是查看效果。</p>
+  </main>
+
+  <svg xmlns="http://www.w3.org/2000/svg" hidden>
+    <symbol id="logo-shape" viewBox="0 0 64 64">
+      <path class="logo-shell" d="M11 9h42c5.523 0 10 4.477 10 10v21c0 5.523-4.477 10-10 10H30L16 59V50H11C5.477 50 1 45.523 1 40V19C1 13.477 5.477 9 11 9Z"/>
+      <path class="logo-signal" d="m17 23 7 7-7 7M31 37h11" fill="none" stroke-linecap="square" stroke-linejoin="miter" stroke-width="4"/>
+    </symbol>
+  </svg>
+
+  <script>
+    const body = document.body;
+    const stage = document.querySelector(".preview-stage");
+    const favicon = document.querySelector("#preview-favicon");
+    let currentState = "normal";
+    let currentTheme = "dune";
+
+    const colors = {
+      dune: { main: "#60ac39", ink: "#20201d", alert: "#d73737" },
+      ocean: { main: "#5fb3a1", ink: "#172126", alert: "#df6c75" },
+      paper: { main: "#397a45", ink: "#f7f7f4", alert: "#a83434" }
+    };
+
+    function logoMarkup() {
+      const theme = colors[currentTheme];
+      const main = currentState === "unread" ? theme.alert : theme.main;
+      return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><path d="M11 9h42c5.523 0 10 4.477 10 10v21c0 5.523-4.477 10-10 10H30L16 59V50H11C5.477 50 1 45.523 1 40V19C1 13.477 5.477 9 11 9Z" fill="${main}"/><path d="m17 23 7 7-7 7M31 37h11" fill="none" stroke="${theme.ink}" stroke-linecap="square" stroke-linejoin="miter" stroke-width="4"/></svg>`;
+    }
+
+    function updateFavicon() {
+      favicon.href = `data:image/svg+xml,${encodeURIComponent(logoMarkup())}`;
+    }
+
+    document.querySelectorAll("[data-state]").forEach((button) => {
+      button.addEventListener("click", () => {
+        currentState = button.dataset.state;
+        stage.dataset.state = currentState;
+        document.querySelectorAll("[data-state]").forEach((item) => item.setAttribute("aria-pressed", String(item === button)));
+        updateFavicon();
+      });
+    });
+
+    document.querySelectorAll("[data-theme]").forEach((button) => {
+      button.addEventListener("click", () => {
+        currentTheme = button.dataset.theme;
+        body.dataset.theme = currentTheme;
+        document.querySelectorAll("[data-theme]").forEach((item) => item.setAttribute("aria-pressed", String(item === button)));
+        updateFavicon();
+      });
+    });
+
+    updateFavicon();
+  </script>
+</body>
+</html>

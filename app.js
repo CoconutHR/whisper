@@ -5,6 +5,8 @@ const PUBLIC_GROUP_NAME = "公共大厅";
 const PUBLIC_GROUP_CONVERSATION = `group:${PUBLIC_GROUP_ID}`;
 const DEFAULT_DOCUMENT_TITLE = document.title;
 const NEW_MESSAGE_TITLE = `【新消息】${DEFAULT_DOCUMENT_TITLE}    `;
+const NORMAL_FAVICON = "logo-oracle-vector.svg";
+const UNREAD_FAVICON = "logo-oracle-vector-unread.svg";
 const HTTP_PROTOCOLS = new Set(["http:", "https:"]);
 const FRIEND_MESSAGE_COLORS = new Set(["default", "green", "blue", "cyan", "amber", "rose"]);
 const MAX_ATTACHMENT_SIZE = 50 * 1024 * 1024;
@@ -209,6 +211,12 @@ let authMode = "login";
 let socket = null;
 let reconnectTimer = null;
 let serverInstance = "";
+let pushRegistration = null;
+let pushPublicKey = "";
+const pushNotifiedMessageIds = new Set();
+const pendingReadMessageIds = new Map();
+const readRequestsInFlight = new Set();
+const lastReportedReadMessageIds = new Map();
 
 function seedTimestamp(daysAgo, hour, minute, second, millisecond) {
   const date = new Date();
@@ -383,6 +391,7 @@ const sidebarEl = document.querySelector("#sidebar");
 const sidebarContentEl = document.querySelector("#sidebar-content");
 const sidebarToggleEl = document.querySelector("#sidebar-toggle");
 const sidebarUnreadEl = document.querySelector("#sidebar-unread");
+const faviconEl = document.querySelector("#app-favicon");
 const pinSidebarEl = document.querySelector("#pin-sidebar");
 const friendsEl = document.querySelector("#friends");
 const friendsEmptyEl = document.querySelector("#friends-empty");
@@ -425,6 +434,8 @@ const passwordSaveStatusEl = document.querySelector("#password-save-status");
 const showMessageTimeEl = document.querySelector("#show-message-time");
 const fullMessageTimeEl = document.querySelector("#full-message-time");
 const parseLatexEl = document.querySelector("#parse-latex");
+const pushNotificationsEl = document.querySelector("#push-notifications");
+const pushNotificationStatusEl = document.querySelector("#push-notification-status");
 const clearMessagesEl = document.querySelector("#clear-messages");
 const schemeSelectorEl = document.querySelector("#scheme-selector");
 const logoutEl = document.querySelector("#logout");
@@ -543,11 +554,59 @@ function clearConversationUnread(conversationId) {
   updateDocumentTitle();
 }
 
+function lastMessageIdForConversation(conversationId) {
+  const messages = state.conversations[conversationId] || [];
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.id) return messages[index].id;
+  }
+  return "";
+}
+
+async function flushConversationRead(conversationId) {
+  if (readRequestsInFlight.has(conversationId)) return;
+  readRequestsInFlight.add(conversationId);
+  try {
+    while (pendingReadMessageIds.has(conversationId)) {
+      const messageId = pendingReadMessageIds.get(conversationId);
+      pendingReadMessageIds.delete(conversationId);
+      try {
+        await apiRequest("/api/conversations/read", {
+          method: "POST", body: { conversation: conversationId, messageId }
+        });
+        lastReportedReadMessageIds.set(conversationId, messageId);
+      } catch (error) {
+        if (!pendingReadMessageIds.has(conversationId)) {
+          pendingReadMessageIds.set(conversationId, messageId);
+        }
+        break;
+      }
+    }
+  } finally {
+    readRequestsInFlight.delete(conversationId);
+  }
+}
+
+function markConversationRead(conversationId = state.currentConversation) {
+  if (!backendEnabled || !backendAuthenticated || !pageAttentionActive) return;
+  if (!conversationId?.startsWith("dm:") && !conversationId?.startsWith("group:")) return;
+  const messageId = lastMessageIdForConversation(conversationId);
+  if (!messageId) return;
+  const hadUnread = unreadCountFor(conversationId) > 0;
+  clearConversationUnread(conversationId);
+  if (hadUnread) renderConversationNavigation();
+  if (lastReportedReadMessageIds.get(conversationId) === messageId) return;
+  if (pendingReadMessageIds.get(conversationId) === messageId) {
+    void flushConversationRead(conversationId);
+    return;
+  }
+  pendingReadMessageIds.set(conversationId, messageId);
+  void flushConversationRead(conversationId);
+}
+
 function setPageAttentionActive(active) {
   pageAttentionActive = active;
-  if (!active || unreadCountFor(state.currentConversation) === 0) return;
-  clearConversationUnread(state.currentConversation);
-  renderConversationNavigation();
+  if (!active) return;
+  markConversationRead(state.currentConversation);
 }
 
 function shouldMarkConversationUnread(conversationId) {
@@ -559,6 +618,8 @@ function resetUnreadState() {
   nudgeTimers.clear();
   state.unreadCounts.clear();
   state.nudgingConversations.clear();
+  pendingReadMessageIds.clear();
+  lastReportedReadMessageIds.clear();
   updateDocumentTitle();
 }
 
@@ -570,9 +631,11 @@ function updateDocumentTitle() {
     }
     titleScrollOffset = 0;
     document.title = DEFAULT_DOCUMENT_TITLE;
+    faviconEl.href = NORMAL_FAVICON;
     return;
   }
 
+  faviconEl.href = UNREAD_FAVICON;
   if (titleScrollTimer !== null) return;
   const scrollTitle = () => {
     const offset = titleScrollOffset % NEW_MESSAGE_TITLE.length;
@@ -948,6 +1011,7 @@ function switchConversation(conversationId) {
   hideFriendMenu();
   hideGroupMenu();
   renderConversation();
+  markConversationRead(conversationId);
 
   if (!pinSidebarEl.checked) setSidebar(false);
   if (conversationId === "self" || conversationId === "group-create" || groupSettingsId) {
@@ -2513,6 +2577,114 @@ async function apiRequest(path, options = {}) {
   return response.json();
 }
 
+function pushSubscriptionPayload(subscription) {
+  const value = subscription.toJSON();
+  return {
+    endpoint: value.endpoint,
+    keys: { auth: value.keys?.auth || "", p256dh: value.keys?.p256dh || "" }
+  };
+}
+
+function urlBase64ToUint8Array(value) {
+  const padding = "=".repeat((4 - (value.length % 4)) % 4);
+  const decoded = window.atob((value + padding).replace(/-/g, "+").replace(/_/g, "/"));
+  return Uint8Array.from(decoded, (character) => character.charCodeAt(0));
+}
+
+function setPushNotificationStatus(message, error = false) {
+  setFormStatus(pushNotificationStatusEl, message, error);
+}
+
+function pushNotificationsSupported() {
+  return window.isSecureContext && "serviceWorker" in navigator
+    && "PushManager" in window && "Notification" in window;
+}
+
+async function initializePushNotifications() {
+  pushNotificationsEl.disabled = true;
+  pushNotificationsEl.checked = false;
+  if (!backendEnabled || !backendAuthenticated || !pushNotificationsSupported()) {
+    setPushNotificationStatus("当前浏览器或连接不支持系统通知");
+    return;
+  }
+  try {
+    const config = await apiRequest("/api/push/config");
+    if (!config.enabled || !config.publicKey) {
+      setPushNotificationStatus("服务器尚未配置消息通知");
+      return;
+    }
+    pushPublicKey = config.publicKey;
+    pushRegistration = await navigator.serviceWorker.register("/sw.js", { scope: "/" });
+    pushRegistration = await navigator.serviceWorker.ready;
+    const subscription = await pushRegistration.pushManager.getSubscription();
+    if (subscription) {
+      await apiRequest("/api/push/subscription", {
+        method: "POST", body: pushSubscriptionPayload(subscription)
+      });
+      pushNotificationsEl.checked = true;
+      setPushNotificationStatus("已在此设备开启");
+    } else if (Notification.permission === "denied") {
+      setPushNotificationStatus("通知权限已被浏览器阻止", true);
+    } else {
+      setPushNotificationStatus("未开启");
+    }
+    pushNotificationsEl.disabled = Notification.permission === "denied";
+  } catch (error) {
+    setPushNotificationStatus(error.message || "通知初始化失败", true);
+  }
+}
+
+async function enablePushNotifications() {
+  if (!pushRegistration || !pushPublicKey) throw new Error("消息通知尚未就绪");
+  const permission = await Notification.requestPermission();
+  if (permission !== "granted") throw new Error("未获得通知权限");
+  let subscription = await pushRegistration.pushManager.getSubscription();
+  if (!subscription) {
+    subscription = await pushRegistration.pushManager.subscribe({
+      userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(pushPublicKey)
+    });
+  }
+  try {
+    await apiRequest("/api/push/subscription", {
+      method: "POST", body: pushSubscriptionPayload(subscription)
+    });
+  } catch (error) {
+    await subscription.unsubscribe();
+    throw error;
+  }
+}
+
+async function disablePushNotifications() {
+  if (!pushRegistration && "serviceWorker" in navigator) {
+    pushRegistration = await navigator.serviceWorker.getRegistration("/");
+  }
+  if (!pushRegistration) return;
+  const subscription = await pushRegistration.pushManager.getSubscription();
+  if (!subscription) return;
+  await apiRequest("/api/push/subscription", {
+    method: "DELETE", body: { endpoint: subscription.endpoint }
+  });
+  await subscription.unsubscribe();
+}
+
+function handleServiceWorkerMessage(event) {
+  if (event.data?.type === "open-conversation") {
+    const conversation = event.data.conversation;
+    if (conversation && state.conversations[conversation]) switchConversation(conversation);
+    return;
+  }
+  if (event.data?.type !== "push-received") return;
+  const message = event.data.message || {};
+  const conversation = message.conversation;
+  if (!conversation || !message.messageId || !state.conversations[conversation]) return;
+  if (state.conversations[conversation].some((item) => item.id === message.messageId)) return;
+  pushNotifiedMessageIds.add(message.messageId);
+  if (shouldMarkConversationUnread(conversation)) {
+    markConversationUnread(conversation);
+    renderConversationNavigation();
+  }
+}
+
 function closeSocket() {
   window.clearTimeout(reconnectTimer);
   reconnectTimer = null;
@@ -2546,6 +2718,13 @@ function showApplicationUI() {
   sidebarEl.hidden = false;
   logoutEl.hidden = !backendEnabled;
   renderConversation();
+  const requestedConversation = new URLSearchParams(location.search).get("conversation");
+  if (requestedConversation && state.conversations[requestedConversation]) {
+    switchConversation(requestedConversation);
+    history.replaceState(null, "", location.pathname);
+  }
+  markConversationRead(state.currentConversation);
+  void initializePushNotifications();
 }
 
 function setAuthMode(mode) {
@@ -2592,6 +2771,9 @@ function hydrateBootstrap(payload) {
   state.friends = new Set(payload.friends || []);
   state.friendColors = new Map(Object.entries(payload.friendColors || {}));
   state.conversations = payload.conversations || { [PUBLIC_GROUP_CONVERSATION]: [], "dm:coco": [] };
+  resetUnreadState();
+  state.unreadCounts = new Map(Object.entries(payload.unreadCounts || {})
+    .filter(([, count]) => Number.isInteger(count) && count > 0));
   if (state.conversations.group && !state.conversations[PUBLIC_GROUP_CONVERSATION]) {
     state.conversations[PUBLIC_GROUP_CONVERSATION] = state.conversations.group;
     delete state.conversations.group;
@@ -2621,6 +2803,7 @@ function hydrateBootstrap(payload) {
   profileNameEl.value = state.currentUser;
   profileSignatureInputEl.value = state.profile.signature;
   updateUploadControls();
+  updateDocumentTitle();
 }
 
 function renameRemoteMember(previousName, memberView) {
@@ -2674,17 +2857,27 @@ function handleSocketEvent(event) {
       && event.message.from !== state.currentUser;
     const isIncomingGroupMessage = isGroupConversation(event.conversation)
       && event.message.from !== state.currentUser;
+    const alreadyNotifiedByPush = pushNotifiedMessageIds.delete(event.message.id);
     if (event.friend) state.friends.add(event.friend);
     if (isIncomingPrivateMessage) state.friends.add(event.friend || conversationFriend);
-    if (isNewMessage && isIncomingPrivateMessage
+    if (isNewMessage && !alreadyNotifiedByPush && isIncomingPrivateMessage
       && shouldMarkConversationUnread(event.conversation)) {
       markConversationUnread(event.conversation);
     }
-    if (isNewMessage && isIncomingGroupMessage
+    if (isNewMessage && !alreadyNotifiedByPush && isIncomingGroupMessage
       && shouldMarkConversationUnread(event.conversation)) {
       markConversationUnread(event.conversation);
     }
     if (state.currentConversation === event.conversation) renderMessages();
+    if (state.currentConversation === event.conversation && pageAttentionActive) {
+      markConversationRead(event.conversation);
+    }
+    renderConversationNavigation();
+    return;
+  }
+
+  if (event.type === "read") {
+    clearConversationUnread(event.conversation);
     renderConversationNavigation();
     return;
   }
@@ -2771,6 +2964,7 @@ function connectSocket() {
         const payload = await apiRequest("/api/bootstrap");
         if (hydrateBootstrap(payload) === false) return;
         renderConversation();
+        markConversationRead(state.currentConversation);
         connectSocket();
       } catch (error) {
         if (error.status === 401) showAuthUI("登录已失效");
@@ -3220,6 +3414,24 @@ parseLatexEl.addEventListener("change", () => {
   persistSettings();
 });
 
+pushNotificationsEl.addEventListener("change", async () => {
+  pushNotificationsEl.disabled = true;
+  try {
+    if (pushNotificationsEl.checked) {
+      await enablePushNotifications();
+      setPushNotificationStatus("已在此设备开启");
+    } else {
+      await disablePushNotifications();
+      setPushNotificationStatus("未开启");
+    }
+  } catch (error) {
+    pushNotificationsEl.checked = !pushNotificationsEl.checked;
+    setPushNotificationStatus(error.message || "通知设置失败", true);
+  } finally {
+    pushNotificationsEl.disabled = Notification.permission === "denied";
+  }
+});
+
 clearMessagesEl.addEventListener("click", async () => {
   try {
     if (backendEnabled) {
@@ -3312,8 +3524,12 @@ schemeSelectorEl.addEventListener("change", () => {
 logoutEl.addEventListener("click", async () => {
   if (!backendEnabled) return;
   try {
+    await disablePushNotifications();
     await apiRequest("/api/logout", { method: "POST" });
-  } catch (_) {}
+  } catch (error) {
+    setFormStatus(profileSaveStatusEl, error.message || "退出登录失败", true);
+    return;
+  }
   showAuthUI();
 });
 
@@ -3352,6 +3568,10 @@ document.addEventListener("keydown", (event) => {
 document.addEventListener("visibilitychange", () => {
   setPageAttentionActive(!document.hidden);
 });
+
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.addEventListener("message", handleServiceWorkerMessage);
+}
 
 window.addEventListener("focus", () => setPageAttentionActive(true));
 window.addEventListener("blur", () => setPageAttentionActive(false));

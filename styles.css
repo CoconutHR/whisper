@@ -835,6 +835,18 @@ body[data-conversation-kind="profile"] .conversation-heading h1 {
   font-size: 14px;
 }
 
+.notification-setting {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35em;
+}
+
+.notification-setting .form-status {
+  flex-basis: 100%;
+  margin-left: 1.55em;
+}
+
 .group-members-field {
   min-width: 0;
   margin: 1.25em 0;

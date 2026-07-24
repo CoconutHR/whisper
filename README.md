@@ -14,6 +14,23 @@ go run ./cmd/whisper -addr 127.0.0.1:8080 -db data/whisper.db -users-backup data
 
 然后打开 [http://127.0.0.1:8080](http://127.0.0.1:8080)，注册第一个账户。
 
+启用浏览器系统通知（Web Push）前，先生成一组长期保存的 VAPID 密钥：
+
+```bash
+go run ./cmd/whisper -generate-vapid-keys
+```
+
+将输出的公钥和私钥配置到服务进程，并设置一个联系地址：
+
+```bash
+export WHISPER_VAPID_PUBLIC_KEY="..."
+export WHISPER_VAPID_PRIVATE_KEY="..."
+export WHISPER_VAPID_SUBJECT="admin@example.com"
+go run ./cmd/whisper -addr 127.0.0.1:8080 -db data/whisper.db -users-backup data/users-backup.json -static .
+```
+
+VAPID 私钥不能提交到 Git 或写入 `app.js`。系统通知需要 HTTPS；本机 `localhost` / `127.0.0.1` 仅适合开发验证。登录后在“个人设置 → 聊天设置”中主动开启“系统消息通知”，浏览器会保存当前设备的 Push 订阅。
+
 详细操作见 [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md)，后端设计见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。启用文件上传前，请按 [`docs/R2_SETUP.md`](docs/R2_SETUP.md) 配置私有 Cloudflare R2 Bucket、CORS 和服务端环境变量。
 
 ## 已实现
@@ -37,7 +54,9 @@ go run ./cmd/whisper -addr 127.0.0.1:8080 -db data/whisper.db -users-backup data
 - 有私聊记录的成员自动加入好友列表
 - 非当前会话或页面不活跃时收到的新消息会轻抖会话名称并显示未读数量
 - 群聊新消息支持独立未读数和提醒
+- 未读位置由服务端持久化，刷新、重新登录或 WebSocket 重连后仍会恢复
 - 未读消息会触发带“【新消息】”前缀的标签页滚动横幅
+- 可选 Web Push 系统通知，网页休眠或关闭时由 Service Worker 提醒
 - 好友菜单支持设置消息正文颜色、清空记录或删除
 - 成员按在线优先排序，离线成员仍可接收留言
 - 点击本人进入个人配置，可修改名称、签名和登录密码

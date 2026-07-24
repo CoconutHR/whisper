@@ -22,9 +22,12 @@ import (
 const sessionCookie = "whisper_session"
 
 type Config struct {
-	Address     string
-	StaticDir   string
-	ObjectStore blob.Store
+	Address         string
+	StaticDir       string
+	ObjectStore     blob.Store
+	VAPIDPublicKey  string
+	VAPIDPrivateKey string
+	VAPIDSubject    string
 }
 
 type Server struct {
@@ -35,6 +38,7 @@ type Server struct {
 	logger     *slog.Logger
 	upgrader   websocket.Upgrader
 	objects    blob.Store
+	push       pushSender
 }
 
 func NewServer(config Config, store *chat.Store, logger *slog.Logger) *Server {
@@ -57,6 +61,13 @@ func NewServer(config Config, store *chat.Store, logger *slog.Logger) *Server {
 	if server.objects != nil {
 		go server.cleanupExpiredAttachmentDrafts()
 	}
+	if config.VAPIDPublicKey != "" && config.VAPIDPrivateKey != "" && config.VAPIDSubject != "" {
+		server.push = &pushService{
+			publicKey: config.VAPIDPublicKey, privateKey: config.VAPIDPrivateKey,
+			subject: normalizeVAPIDSubject(config.VAPIDSubject), store: store,
+			logger: logger, client: newPushHTTPClient(),
+		}
+	}
 	return server
 }
 
@@ -70,6 +81,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/profile", s.requireAuth(s.handleProfile))
 	mux.HandleFunc("/api/password", s.requireAuth(s.handlePassword))
 	mux.HandleFunc("/api/settings", s.requireAuth(s.handleSettings))
+	mux.HandleFunc("/api/push/config", s.requireAuth(s.handlePushConfig))
+	mux.HandleFunc("/api/push/subscription", s.requireAuth(s.handlePushSubscription))
+	mux.HandleFunc("/api/conversations/read", s.requireAuth(s.handleReadConversation))
 	mux.HandleFunc("/api/conversations/clear", s.requireAuth(s.handleClearConversation))
 	mux.HandleFunc("/api/friends/delete", s.requireAuth(s.handleDeleteFriend))
 	mux.HandleFunc("/api/friends/color", s.requireAuth(s.handleFriendColor))
@@ -251,6 +265,27 @@ func (s *Server) handleClearConversation(w http.ResponseWriter, r *http.Request,
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (s *Server) handleReadConversation(w http.ResponseWriter, r *http.Request, userID string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w, http.MethodPost)
+		return
+	}
+	var request struct {
+		Conversation string `json:"conversation"`
+		MessageID    string `json:"messageId"`
+	}
+	if !decodeJSON(w, r, &request) {
+		return
+	}
+	conversation, err := s.store.MarkConversationRead(userID, request.Conversation, request.MessageID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	s.hub.sendTo(userID, map[string]any{"type": "read", "conversation": conversation})
+	writeJSON(w, http.StatusOK, map[string]string{"conversation": conversation})
+}
+
 func (s *Server) handleDeleteFriend(w http.ResponseWriter, r *http.Request, userID string) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w, http.MethodPost)
@@ -418,6 +453,12 @@ func (s *Server) dispatchMessage(senderID, targetID, targetName string, message 
 		"type": "message", "conversation": "dm:" + senderName,
 		"friend": senderName, "message": s.store.MessageView(targetID, message),
 	})
+	if s.push != nil {
+		go s.push.Send(targetID, pushMessage{
+			Title: senderName, Body: pushMessageBody(message),
+			Conversation: "dm:" + senderName, MessageID: message.ID,
+		})
+	}
 }
 
 func (s *Server) dispatchGroupMessage(senderID, groupID string, memberIDs []string, message *chat.Message, requestID string) {
@@ -430,6 +471,12 @@ func (s *Server) dispatchGroupMessage(senderID, groupID string, memberIDs []stri
 			event["requestId"] = requestID
 		}
 		s.hub.sendTo(memberID, event)
+		if memberID != senderID && s.push != nil {
+			go s.push.Send(memberID, pushMessage{
+				Title: s.store.NameForID(senderID) + " · 群聊", Body: pushMessageBody(message),
+				Conversation: chat.GroupConversationKey(groupID), MessageID: message.ID,
+			})
+		}
 	}
 }
 
@@ -452,12 +499,19 @@ func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {
 	}
 	files := map[string]string{
 		"/": "/index.html", "/index.html": "/index.html",
-		"/styles.css": "/styles.css", "/app.js": "/app.js",
+		"/styles.css": "/styles.css", "/app.js": "/app.js", "/sw.js": "/sw.js",
+		"/logo-oracle.svg": "/logo-oracle.svg", "/logo-oracle-unread.svg": "/logo-oracle-unread.svg",
+		"/logo-oracle-vector.svg":        "/logo-oracle-vector.svg",
+		"/logo-oracle-vector-unread.svg": "/logo-oracle-vector-unread.svg",
 	}
 	name, ok := files[r.URL.Path]
 	if !ok {
 		http.NotFound(w, r)
 		return
+	}
+	if name == "/sw.js" {
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Service-Worker-Allowed", "/")
 	}
 	http.ServeFile(w, r, filepath.Join(s.config.StaticDir, name))
 }

@@ -181,6 +181,53 @@ func TestPrivateDeliveryAndCocoIsolation(t *testing.T) {
 	}
 }
 
+func TestPushSubscriptionLifecycle(t *testing.T) {
+	store := newTestStore(t)
+	alice, err := store.Register("palice", "password123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bob, err := store.Register("pbob", "password123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	subscription := PushSubscription{
+		Endpoint: "https://push.example.test/subscription-1",
+		Keys:     PushSubscriptionKeys{P256dh: "public-key", Auth: "auth-key"},
+	}
+	if err := store.SavePushSubscription(alice.ID, subscription); err != nil {
+		t.Fatal(err)
+	}
+	subscriptions, err := store.PushSubscriptions(alice.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(subscriptions) != 1 || subscriptions[0].Endpoint != subscription.Endpoint {
+		t.Fatalf("alice subscriptions = %#v", subscriptions)
+	}
+
+	subscription.Keys.Auth = "updated-auth-key"
+	if err := store.SavePushSubscription(alice.ID, subscription); err != nil {
+		t.Fatal(err)
+	}
+	subscriptions, err = store.PushSubscriptions(alice.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(subscriptions) != 1 || subscriptions[0].Keys.Auth != "updated-auth-key" {
+		t.Fatalf("updated subscriptions = %#v", subscriptions)
+	}
+	if bobSubscriptions, err := store.PushSubscriptions(bob.ID); err != nil || len(bobSubscriptions) != 0 {
+		t.Fatalf("bob subscriptions = %#v, %v", bobSubscriptions, err)
+	}
+	if err := store.DeletePushSubscription(alice.ID, subscription.Endpoint); err != nil {
+		t.Fatal(err)
+	}
+	if subscriptions, err = store.PushSubscriptions(alice.ID); err != nil || len(subscriptions) != 0 {
+		t.Fatalf("subscriptions after delete = %#v, %v", subscriptions, err)
+	}
+}
+
 func TestGroupLifecycleAndHistoryVisibility(t *testing.T) {
 	store := newTestStore(t)
 	alice, err := store.Register("alice", "password123")

@@ -28,7 +28,7 @@ const (
 	MaxNameRunes    = 7
 	MaxMessage      = 2000
 	MaxGroupName    = 32
-	schemaVersion   = 7
+	schemaVersion   = 9
 	RecallWindow    = 2 * time.Minute
 )
 
@@ -175,11 +175,22 @@ type Bootstrap struct {
 	UploadsEnabled bool                     `json:"uploadsEnabled"`
 	Stickers       []AttachmentView         `json:"stickers"`
 	Conversations  map[string][]MessageView `json:"conversations"`
+	UnreadCounts   map[string]int           `json:"unreadCounts"`
 }
 
 type DeliveryNotice struct {
 	MessageID string
 	SenderID  string
+}
+
+type PushSubscription struct {
+	Endpoint string               `json:"endpoint"`
+	Keys     PushSubscriptionKeys `json:"keys"`
+}
+
+type PushSubscriptionKeys struct {
+	Auth   string `json:"auth"`
+	P256dh string `json:"p256dh"`
 }
 
 type StoreConfig struct {
@@ -372,6 +383,14 @@ func (s *Store) initializeSchema() error {
 			PRIMARY KEY (user_id, conversation_key),
 			FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 		)`,
+		`CREATE TABLE IF NOT EXISTS conversation_reads (
+			user_id TEXT NOT NULL,
+			conversation_key TEXT NOT NULL,
+			last_read_at TEXT NOT NULL,
+			last_read_message_id TEXT NOT NULL,
+			PRIMARY KEY (user_id, conversation_key),
+			FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+		)`,
 		`CREATE TABLE IF NOT EXISTS messages (
 			id TEXT PRIMARY KEY,
 			kind TEXT NOT NULL CHECK (kind IN ('group', 'private')),
@@ -423,18 +442,30 @@ func (s *Store) initializeSchema() error {
 		`CREATE INDEX IF NOT EXISTS message_stickers_asset_idx ON message_stickers(attachment_id)`,
 		`CREATE INDEX IF NOT EXISTS messages_sent_at_idx ON messages(sent_at, id)`,
 		`CREATE INDEX IF NOT EXISTS messages_recipient_idx ON messages(to_id, delivered_at)`,
+		`CREATE TABLE IF NOT EXISTS push_subscriptions (
+			endpoint TEXT PRIMARY KEY,
+			user_id TEXT NOT NULL,
+			p256dh TEXT NOT NULL,
+			auth TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+		)`,
+		`CREATE INDEX IF NOT EXISTS push_subscriptions_user_idx ON push_subscriptions(user_id)`,
 	}
 	for _, statement := range statements {
 		if _, err := s.db.Exec(statement); err != nil {
 			return fmt.Errorf("初始化 SQLite: %w", err)
 		}
 	}
+	previousSchemaVersion, err := currentSchemaVersion(s.db)
+	if err != nil {
+		return err
+	}
 	if err := s.migrateGroups(); err != nil {
 		return err
 	}
-	_, err := s.db.Exec(`INSERT INTO meta(key, value) VALUES ('schema_version', ?)
-		ON CONFLICT(key) DO UPDATE SET value = excluded.value`, schemaVersion)
-	return err
+	return s.migrateConversationReads(previousSchemaVersion)
 }
 
 func (s *Store) migrateGroups() error {
@@ -639,9 +670,18 @@ func (s *Store) Register(name, password string) (SelfView, error) {
 		return SelfView{}, err
 	}
 	deliveredAt := now.Format(time.RFC3339Nano)
+	welcomeMessageID := randomID()
 	if _, err := tx.Exec(`INSERT INTO messages(id, kind, from_id, to_id, text, sent_at, delivered_at)
-		VALUES (?, 'private', ?, ?, ?, ?, ?)`, randomID(), CocoID, user.ID,
+		VALUES (?, 'private', ?, ?, ?, ?, ?)`, welcomeMessageID, CocoID, user.ID,
 		"这里的消息仅你自己可见。", now.Format(time.RFC3339Nano), deliveredAt); err != nil {
+		return SelfView{}, err
+	}
+	if err := seedLatestConversationReadTx(tx, user.ID, GroupConversationKey(PublicGroupID)); err != nil {
+		return SelfView{}, err
+	}
+	if err := setConversationReadTx(tx, user.ID, "dm:"+CocoID, conversationReadCursor{
+		SentAt: now, MessageID: welcomeMessageID,
+	}); err != nil {
 		return SelfView{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -712,7 +752,7 @@ func (s *Store) Bootstrap(userID string, online map[string]bool) (Bootstrap, err
 		Self:    selfView(viewer),
 		Members: []MemberView{{Name: CocoName, Online: true, Reserved: true, Signature: "仅自己可见"}},
 		Friends: []string{}, FriendColors: map[string]string{}, Groups: groups,
-		Conversations: conversations,
+		Conversations: conversations, UnreadCounts: map[string]int{},
 	}
 	result.Stickers, err = stickersForUser(tx, userID)
 	if err != nil {
@@ -767,6 +807,10 @@ func (s *Store) Bootstrap(userID string, online map[string]bool) (Bootstrap, err
 	if err != nil {
 		return Bootstrap{}, err
 	}
+	readCursors, err := conversationReadCursors(tx, userID)
+	if err != nil {
+		return Bootstrap{}, err
+	}
 	messageRows, err := tx.Query(`SELECT id, kind, from_id, COALESCE(to_id, ''), COALESCE(group_id, ''), text, sticker, sent_at, delivered_at, recalled_at
 		FROM messages WHERE (kind = 'group' AND (group_id IN (SELECT group_id FROM group_members WHERE user_id = ?) OR group_id IS NULL))
 		OR from_id = ? OR to_id = ? ORDER BY sent_at, id`, userID, userID, userID)
@@ -794,6 +838,13 @@ func (s *Store) Bootstrap(userID string, online map[string]bool) (Bootstrap, err
 			continue
 		}
 		result.Conversations[key] = append(result.Conversations[key], messageView(userID, message, usersByID))
+		cursor, hasCursor := readCursors[stableConversationKeyForMessage(userID, message)]
+		if message.FromID != userID && message.FromID != "*" &&
+			(!hasCursor || cursorComesAfter(conversationReadCursor{
+				SentAt: message.SentAt, MessageID: message.ID,
+			}, cursor)) {
+			result.UnreadCounts[key]++
+		}
 	}
 	if err := messageRows.Close(); err != nil {
 		return Bootstrap{}, err
@@ -1137,6 +1188,52 @@ func (s *Store) MarkDelivered(userID string) ([]DeliveryNotice, error) {
 		return nil, err
 	}
 	return notices, nil
+}
+
+func (s *Store) SavePushSubscription(userID string, subscription PushSubscription) error {
+	if strings.TrimSpace(subscription.Endpoint) == "" ||
+		strings.TrimSpace(subscription.Keys.P256dh) == "" ||
+		strings.TrimSpace(subscription.Keys.Auth) == "" {
+		return errors.New("推送订阅信息不完整")
+	}
+	now := time.Now().Format(time.RFC3339Nano)
+	_, err := s.db.Exec(`INSERT INTO push_subscriptions(endpoint, user_id, p256dh, auth, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(endpoint) DO UPDATE SET user_id = excluded.user_id,
+			p256dh = excluded.p256dh, auth = excluded.auth, updated_at = excluded.updated_at`,
+		subscription.Endpoint, userID, subscription.Keys.P256dh, subscription.Keys.Auth, now, now)
+	return err
+}
+
+func (s *Store) DeletePushSubscription(userID, endpoint string) error {
+	_, err := s.db.Exec(`DELETE FROM push_subscriptions WHERE user_id = ? AND endpoint = ?`, userID, endpoint)
+	return err
+}
+
+func (s *Store) DeletePushSubscriptions(userID string) error {
+	_, err := s.db.Exec(`DELETE FROM push_subscriptions WHERE user_id = ?`, userID)
+	return err
+}
+
+func (s *Store) PushSubscriptions(userID string) ([]PushSubscription, error) {
+	rows, err := s.db.Query(`SELECT endpoint, p256dh, auth FROM push_subscriptions WHERE user_id = ?`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := []PushSubscription{}
+	for rows.Next() {
+		var subscription PushSubscription
+		if err := rows.Scan(&subscription.Endpoint, &subscription.Keys.P256dh, &subscription.Keys.Auth); err != nil {
+			return nil, err
+		}
+		result = append(result, subscription)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 func (s *Store) MessageView(viewerID string, message *Message) MessageView {
