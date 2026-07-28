@@ -272,6 +272,22 @@ ul li {
   background: var(--bg);
 }
 
+.conversation-header::before {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  background: var(--bg);
+  box-shadow: 0 0 0 100vmax var(--bg);
+  clip-path: inset(0 -100vmax);
+  content: "";
+  pointer-events: none;
+}
+
+.conversation-header > * {
+  position: relative;
+  z-index: 1;
+}
+
 .conversation-heading {
   min-width: 0;
   flex: 1 1 auto;

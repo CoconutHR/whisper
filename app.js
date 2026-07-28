@@ -3212,7 +3212,8 @@ function handleSocketEvent(event) {
     const messages = state.conversations[event.conversation];
     const isNewMessage = !messages.some((message) => message.id === event.message.id);
     const isCurrentConversation = state.currentConversation === event.conversation;
-    const followLatest = isNewMessage && isCurrentConversation && conversationIsAtLatest();
+    const isOwnMessage = event.message.from === state.currentUser;
+    const followIncomingMessage = isNewMessage && isCurrentConversation && conversationIsAtLatest();
     if (isNewMessage) messages.push(event.message);
     if (pendingPushReadMessageIds.get(event.conversation) === event.message.id) {
       pendingPushReadMessageIds.delete(event.conversation);
@@ -3233,7 +3234,8 @@ function handleSocketEvent(event) {
     }
     if (isCurrentConversation) {
       renderMessages();
-      if (followLatest && (isIncomingPrivateMessage || isIncomingGroupMessage)) {
+      if (isNewMessage && (isOwnMessage
+        || (followIncomingMessage && (isIncomingPrivateMessage || isIncomingGroupMessage)))) {
         scrollConversationToLatest();
       }
     }
