@@ -1,4 +1,6 @@
 const NOTIFICATION_TAG_PREFIX = "whisper:";
+const acknowledgedMessageIDs = new Set();
+const MAX_ACKNOWLEDGED_MESSAGES = 256;
 
 function appURL(path = "") {
   return new URL(path, self.registration.scope).href;
@@ -13,6 +15,19 @@ self.addEventListener("push", (event) => {
   event.waitUntil(handlePush(event));
 });
 
+self.addEventListener("message", (event) => {
+  if (event.data?.type !== "conversation-read") return;
+  const conversation = typeof event.data.conversation === "string" ? event.data.conversation : "";
+  const messageID = typeof event.data.messageId === "string" ? event.data.messageId : "";
+  if (messageID) {
+    acknowledgedMessageIDs.add(messageID);
+    if (acknowledgedMessageIDs.size > MAX_ACKNOWLEDGED_MESSAGES) {
+      acknowledgedMessageIDs.delete(acknowledgedMessageIDs.values().next().value);
+    }
+  }
+  event.waitUntil(closeConversationNotification(conversation));
+});
+
 async function handlePush(event) {
   let message = {};
   try {
@@ -21,7 +36,7 @@ async function handlePush(event) {
 
   const windows = await appWindows();
   windows.forEach((client) => client.postMessage({ type: "push-received", message }));
-  if (windows.some((client) => client.focused && client.visibilityState === "visible")) return;
+  if (message.messageId && acknowledgedMessageIDs.has(message.messageId)) return;
 
   const conversation = typeof message.conversation === "string" ? message.conversation : "";
   await self.registration.showNotification(message.title || "耳语", {
@@ -32,6 +47,14 @@ async function handlePush(event) {
     renotify: true,
     data: { conversation },
   });
+}
+
+async function closeConversationNotification(conversation) {
+  if (!conversation) return;
+  const notifications = await self.registration.getNotifications({
+    tag: NOTIFICATION_TAG_PREFIX + conversation,
+  });
+  notifications.forEach((notification) => notification.close());
 }
 
 self.addEventListener("notificationclick", (event) => {

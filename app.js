@@ -17,6 +17,7 @@ const MAX_ATTACHMENT_SIZE = 50 * 1024 * 1024;
 const MAX_ATTACHMENT_TOTAL_SIZE = 100 * 1024 * 1024;
 const MAX_ATTACHMENTS_PER_MESSAGE = 5;
 const MAX_STICKER_SIZE = 10 * 1024 * 1024;
+const CONVERSATION_BOTTOM_THRESHOLD = 24;
 const VIDEO_CONTENT_TYPES = new Set([
   "video/mp4", "video/webm", "video/ogg", "video/quicktime", "video/x-m4v"
 ]);
@@ -227,6 +228,8 @@ let serverInstance = "";
 let pushRegistration = null;
 let pushPublicKey = "";
 const pushNotifiedMessageIds = new Set();
+const pendingPushReadMessageIds = new Map();
+const dismissedNotificationMessageIds = new Map();
 const pendingReadMessageIds = new Map();
 const readRequestsInFlight = new Set();
 const lastReportedReadMessageIds = new Map();
@@ -355,7 +358,6 @@ let titleScrollTimer = null;
 let titleScrollOffset = 0;
 let composerSending = false;
 let renderedEmojiCount = 0;
-let pageAttentionActive = !document.hidden;
 const pendingMessageSends = new Map();
 let mediaMenuContext = null;
 let forwardAttachment = null;
@@ -576,6 +578,7 @@ function stopConversationNudge(conversationId) {
 
 function clearConversationUnread(conversationId) {
   state.unreadCounts.delete(conversationId);
+  pendingPushReadMessageIds.delete(conversationId);
   stopConversationNudge(conversationId);
   updateDocumentTitle();
 }
@@ -612,14 +615,24 @@ async function flushConversationRead(conversationId) {
   }
 }
 
+function dismissConversationNotification(conversationId, messageId) {
+  if (!messageId || !("serviceWorker" in navigator)) return;
+  if (dismissedNotificationMessageIds.get(conversationId) === messageId) return;
+  const worker = pushRegistration?.active || navigator.serviceWorker.controller;
+  if (!worker) return;
+  dismissedNotificationMessageIds.set(conversationId, messageId);
+  worker.postMessage({ type: "conversation-read", conversation: conversationId, messageId });
+}
+
 function markConversationRead(conversationId = state.currentConversation) {
-  if (!backendEnabled || !backendAuthenticated || !pageAttentionActive) return;
   if (!conversationId?.startsWith("dm:") && !conversationId?.startsWith("group:")) return;
-  const messageId = lastMessageIdForConversation(conversationId);
-  if (!messageId) return;
+  const messageId = pendingPushReadMessageIds.get(conversationId)
+    || lastMessageIdForConversation(conversationId);
   const hadUnread = unreadCountFor(conversationId) > 0;
   clearConversationUnread(conversationId);
   if (hadUnread) renderConversationNavigation();
+  dismissConversationNotification(conversationId, messageId);
+  if (!backendEnabled || !backendAuthenticated || !messageId) return;
   if (lastReportedReadMessageIds.get(conversationId) === messageId) return;
   if (pendingReadMessageIds.get(conversationId) === messageId) {
     void flushConversationRead(conversationId);
@@ -629,14 +642,10 @@ function markConversationRead(conversationId = state.currentConversation) {
   void flushConversationRead(conversationId);
 }
 
-function setPageAttentionActive(active) {
-  pageAttentionActive = active;
-  if (!active) return;
+function acknowledgeCurrentConversation() {
+  if (unreadCountFor(state.currentConversation) === 0
+    && !pendingPushReadMessageIds.has(state.currentConversation)) return;
   markConversationRead(state.currentConversation);
-}
-
-function shouldMarkConversationUnread(conversationId) {
-  return state.currentConversation !== conversationId || !pageAttentionActive;
 }
 
 function resetUnreadState() {
@@ -646,6 +655,9 @@ function resetUnreadState() {
   state.nudgingConversations.clear();
   pendingReadMessageIds.clear();
   lastReportedReadMessageIds.clear();
+  pendingPushReadMessageIds.clear();
+  dismissedNotificationMessageIds.clear();
+  pushNotifiedMessageIds.clear();
   updateDocumentTitle();
 }
 
@@ -1161,6 +1173,12 @@ function scrollConversationToLatest() {
   if (document.fonts?.ready) document.fonts.ready.then(scroll).catch(() => {});
 }
 
+function conversationIsAtLatest() {
+  const scrollingElement = document.scrollingElement || document.documentElement;
+  return scrollingElement.scrollHeight - scrollingElement.scrollTop
+    - scrollingElement.clientHeight <= CONVERSATION_BOTTOM_THRESHOLD;
+}
+
 function messageElementById(messageId) {
   return [...messagesEl.querySelectorAll(".message[data-message-id]")]
     .find((element) => element.dataset.messageId === messageId) || null;
@@ -1215,7 +1233,6 @@ function switchConversation(conversationId) {
   if (!allowedPanel && !state.conversations[conversationId]) return;
 
   saveCurrentMessageDraft();
-  clearConversationUnread(conversationId);
   state.conversationViewVersion += 1;
   state.currentConversation = conversationId;
   restoreMessageDraft(conversationId);
@@ -2599,6 +2616,8 @@ function receivePrivateMessage(from, text) {
   const member = memberByName(from);
   if (!member) return;
 
+  const conversationId = conversationIdFor(from);
+  const followLatest = state.currentConversation === conversationId && conversationIsAtLatest();
   state.conversations[conversationIdFor(from)].push({
     from,
     text,
@@ -2606,12 +2625,12 @@ function receivePrivateMessage(from, text) {
     delivery: "sent"
   });
   state.friends.add(from);
-  const conversationId = conversationIdFor(from);
-  if (shouldMarkConversationUnread(conversationId)) {
-    markConversationUnread(conversationId);
-  }
+  markConversationUnread(conversationId);
   renderConversationNavigation();
-  if (state.currentConversation === conversationId) renderMessages();
+  if (state.currentConversation === conversationId) {
+    renderMessages();
+    if (followLatest) scrollConversationToLatest();
+  }
 }
 
 function hideMediaMenu() {
@@ -2989,10 +3008,9 @@ function handleServiceWorkerMessage(event) {
   if (!conversation || !message.messageId || !state.conversations[conversation]) return;
   if (state.conversations[conversation].some((item) => item.id === message.messageId)) return;
   pushNotifiedMessageIds.add(message.messageId);
-  if (shouldMarkConversationUnread(conversation)) {
-    markConversationUnread(conversation);
-    renderConversationNavigation();
-  }
+  pendingPushReadMessageIds.set(conversation, message.messageId);
+  markConversationUnread(conversation);
+  renderConversationNavigation();
 }
 
 function closeSocket() {
@@ -3040,7 +3058,6 @@ function showApplicationUI() {
   } else {
     scrollConversationToLatest();
   }
-  markConversationRead(state.currentConversation);
   void initializePushNotifications();
 }
 
@@ -3194,7 +3211,12 @@ function handleSocketEvent(event) {
     if (!state.conversations[event.conversation]) state.conversations[event.conversation] = [];
     const messages = state.conversations[event.conversation];
     const isNewMessage = !messages.some((message) => message.id === event.message.id);
+    const isCurrentConversation = state.currentConversation === event.conversation;
+    const followLatest = isNewMessage && isCurrentConversation && conversationIsAtLatest();
     if (isNewMessage) messages.push(event.message);
+    if (pendingPushReadMessageIds.get(event.conversation) === event.message.id) {
+      pendingPushReadMessageIds.delete(event.conversation);
+    }
     const conversationFriend = friendNameForConversation(event.conversation);
     const isIncomingPrivateMessage = event.conversation.startsWith("dm:")
       && event.message.from !== state.currentUser;
@@ -3203,24 +3225,27 @@ function handleSocketEvent(event) {
     const alreadyNotifiedByPush = pushNotifiedMessageIds.delete(event.message.id);
     if (event.friend) state.friends.add(event.friend);
     if (isIncomingPrivateMessage) state.friends.add(event.friend || conversationFriend);
-    if (isNewMessage && !alreadyNotifiedByPush && isIncomingPrivateMessage
-      && shouldMarkConversationUnread(event.conversation)) {
+    if (isNewMessage && !alreadyNotifiedByPush && isIncomingPrivateMessage) {
       markConversationUnread(event.conversation);
     }
-    if (isNewMessage && !alreadyNotifiedByPush && isIncomingGroupMessage
-      && shouldMarkConversationUnread(event.conversation)) {
+    if (isNewMessage && !alreadyNotifiedByPush && isIncomingGroupMessage) {
       markConversationUnread(event.conversation);
     }
-    if (state.currentConversation === event.conversation) renderMessages();
-    if (state.currentConversation === event.conversation && pageAttentionActive) {
-      markConversationRead(event.conversation);
+    if (isCurrentConversation) {
+      renderMessages();
+      if (followLatest && (isIncomingPrivateMessage || isIncomingGroupMessage)) {
+        scrollConversationToLatest();
+      }
     }
     renderConversationNavigation();
     return;
   }
 
   if (event.type === "read") {
+    const messageId = pendingPushReadMessageIds.get(event.conversation)
+      || lastMessageIdForConversation(event.conversation);
     clearConversationUnread(event.conversation);
+    dismissConversationNotification(event.conversation, messageId);
     renderConversationNavigation();
     return;
   }
@@ -3308,7 +3333,6 @@ function connectSocket() {
         if (hydrateBootstrap(payload) === false) return;
         renderConversation();
         scrollConversationToLatest();
-        markConversationRead(state.currentConversation);
         connectSocket();
       } catch (error) {
         if (error.status === 401) showAuthUI("登录已失效");
@@ -4015,30 +4039,18 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
-document.addEventListener("visibilitychange", () => {
-  setPageAttentionActive(!document.hidden);
-});
-
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker.addEventListener("message", handleServiceWorkerMessage);
 }
 
 window.addEventListener("focus", () => {
-  setPageAttentionActive(true);
   syncPushNotificationPermission();
 });
-window.addEventListener("blur", () => setPageAttentionActive(false));
-window.addEventListener("pageshow", () => setPageAttentionActive(true));
-window.addEventListener("pagehide", () => setPageAttentionActive(false));
-document.documentElement.addEventListener("pointerenter", () => setPageAttentionActive(true));
-document.documentElement.addEventListener("pointerleave", () => setPageAttentionActive(false));
-document.addEventListener("pointerdown", () => setPageAttentionActive(true));
-document.addEventListener("touchstart", () => setPageAttentionActive(true), { passive: true });
-document.addEventListener("wheel", () => setPageAttentionActive(true), { passive: true });
-document.addEventListener("keydown", (event) => {
-  const switchingTabs = event.key === "Tab" && (event.ctrlKey || event.metaKey);
-  setPageAttentionActive(!switchingTabs);
-});
+document.addEventListener("pointermove", acknowledgeCurrentConversation, { passive: true });
+document.addEventListener("pointerdown", acknowledgeCurrentConversation, { passive: true });
+document.addEventListener("touchstart", acknowledgeCurrentConversation, { passive: true });
+document.addEventListener("wheel", acknowledgeCurrentConversation, { passive: true });
+document.addEventListener("keydown", acknowledgeCurrentConversation);
 
 const storedTheme = localStorage.getItem("whisper-theme");
 if (["dune", "ocean", "paper"].includes(storedTheme)) {
